@@ -1,6 +1,7 @@
 import type { FC } from 'hono/jsx';
 import { Layout } from '../components/Layout';
 import { AppCard } from '../components/AppCard';
+import { AdminSecretModal } from '../components/AdminSecretModal';
 
 interface DashboardProps {
   apps: { app_id: string; spreadsheet_id: string; created_at: string }[];
@@ -110,6 +111,52 @@ export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, lo
           <a href="https://github.com/slashtechno/gsdb" target="_blank" rel="noreferrer">GitHub</a>
         </footer>
       </div>
+
+      {/* Admin secret modal — shows if no secret in localStorage */}
+      <AdminSecretModal onSubmit="setAdminSecret()" />
+
+      <script>{`
+        // Load admin secret from localStorage; prompt if missing
+        function initAdminAuth() {
+          const secret = localStorage.getItem('gsdb_admin_secret');
+          if (!secret) {
+            document.getElementById('adminModal').style.display = 'flex';
+            document.getElementById('secretInput').focus();
+          } else {
+            document.getElementById('adminModal').style.display = 'none';
+          }
+        }
+
+        // Save admin secret and close modal
+        function setAdminSecret() {
+          const secret = document.getElementById('secretInput').value;
+          if (secret) {
+            localStorage.setItem('gsdb_admin_secret', secret);
+            document.getElementById('adminModal').style.display = 'none';
+          }
+        }
+
+        // Clear admin secret (e.g., via logout button)
+        window.clearAdminSecret = function() {
+          localStorage.removeItem('gsdb_admin_secret');
+          location.reload();
+        };
+
+        // Patch fetch to include X-Admin-Secret header
+        const originalFetch = window.fetch;
+        window.fetch = function(resource, init) {
+          const secret = localStorage.getItem('gsdb_admin_secret');
+          if (secret && typeof resource === 'string' && resource.startsWith('/manage')) {
+            init = init || {};
+            init.headers = init.headers || {};
+            init.headers['X-Admin-Secret'] = secret;
+          }
+          return originalFetch.apply(this, arguments);
+        };
+
+        // Initialize on page load
+        initAdminAuth();
+      `}</script>
     </Layout>
   );
 };
