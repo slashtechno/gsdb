@@ -6,25 +6,32 @@ interface AdminSecretModalProps {
 
 export const AdminSecretModal: FC<AdminSecretModalProps> = ({ onSubmit }) => {
   return (
-    <div id="adminModal" style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      background: 'rgba(0, 0, 0, 0.5)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 1000,
-    }}>
-      <div style={{
+    <>
+      {/* Backdrop — blocks interaction with content */}
+      <div id="modalBackdrop" style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0, 0, 0, 0.7)',
+        display: 'none',
+        zIndex: 999,
+      }} />
+      {/* Modal */}
+      <div id="adminModal" style={{
+        position: 'fixed',
+        top: '50%',
+        left: '50%',
+        transform: 'translate(-50%, -50%)',
         background: 'var(--surface)',
         borderRadius: '8px',
         padding: '32px',
         maxWidth: '400px',
-        width: '100%',
+        width: 'calc(100% - 32px)',
         border: '1px solid var(--border)',
+        zIndex: 1000,
+        display: 'none',
       }}>
         <h2 style={{ margin: '0 0 8px 0', fontSize: '18px', fontWeight: 600 }}>Admin Secret</h2>
         <p style={{ margin: '0 0 20px 0', fontSize: '14px', color: 'var(--muted)' }}>
@@ -63,7 +70,13 @@ export const AdminSecretModal: FC<AdminSecretModalProps> = ({ onSubmit }) => {
         >
           Unlock
         </button>
+        <div id="modalError" style={{
+          color: 'var(--danger)',
+          fontSize: '13px',
+          marginTop: '12px',
+          display: 'none',
+        }} />
       </div>
-    </div>
+    </>
   );
 };

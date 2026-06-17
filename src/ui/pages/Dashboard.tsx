@@ -1,21 +1,17 @@
 import type { FC } from 'hono/jsx';
 import { Layout } from '../components/Layout';
-import { AppCard } from '../components/AppCard';
 import { AdminSecretModal } from '../components/AdminSecretModal';
 
 interface DashboardProps {
-  apps: { app_id: string; spreadsheet_id: string; created_at: string }[];
-  authenticated: boolean;
   baseUrl: string;
-  loadError?: string | null;
 }
 
-export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, loadError }) => {
+export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
   const openApiUrl = `${baseUrl}/openapi.json`;
 
   return (
     <Layout title="gsdb — Dashboard">
-      <div style={containerStyle}>
+      <div style={containerStyle} id="dashboardContent">
         {/* Header */}
         <header style={headerStyle}>
           <div>
@@ -25,18 +21,13 @@ export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, lo
             <p style={taglineStyle}>Google Sheets → REST API proxy</p>
           </div>
           <div style={headerActionsStyle}>
-            {!authenticated && (
-              <a href="/auth/login" style={loginBtnStyle}>
-                Connect Google Account
-              </a>
-            )}
-            {authenticated && (
-              <span style={authBadgeStyle}>● Connected</span>
-            )}
+            <button onclick="clearAdminSecret()" style={logoutBtnStyle}>
+              Logout
+            </button>
           </div>
         </header>
 
-        {/* OpenAPI CTA — highly visible, as required by spec */}
+        {/* OpenAPI CTA */}
         <div style={ctaBoxStyle}>
           <div style={ctaLeftStyle}>
             <div style={ctaTitleStyle}>OpenAPI Schema</div>
@@ -56,13 +47,10 @@ export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, lo
         {/* Quick links */}
         <div style={quickLinksStyle}>
           <a href="/docs" style={quickLinkStyle}>
-            <span>📄</span> Swagger UI
+            📄 Swagger UI
           </a>
           <a href="/openapi.json" style={quickLinkStyle} target="_blank">
-            <span>{ '{}'}</span> openapi.json
-          </a>
-          <a href="/auth/status" style={quickLinkStyle}>
-            <span>🔐</span> Auth status
+            ⚙️ OpenAPI JSON
           </a>
         </div>
 
@@ -70,36 +58,10 @@ export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, lo
         <section>
           <div style={sectionHeaderStyle}>
             <h2 style={sectionTitleStyle}>Registered Apps</h2>
-            <span style={countBadgeStyle}>{apps.length}</span>
+            <button style={createBtnStyle}>+ Create App</button>
           </div>
-
-          {loadError && (
-            <div style={errorBannerStyle}>
-              <strong>Error loading app registry:</strong> {loadError}
-            </div>
-          )}
-
-          {!loadError && apps.length === 0 ? (
-            <div style={emptyStateStyle}>
-              <p style={emptyTitleStyle}>No apps registered yet</p>
-              <p style={emptyDescStyle}>
-                Use the{' '}
-                <code style={inlineCodeStyle}>POST /manage/apps</code> endpoint with
-                your <code style={inlineCodeStyle}>X-Admin-Secret</code> header to add one.
-              </p>
-            </div>
-          ) : !loadError ? (
-            <div style={gridStyle}>
-              {apps.map((app) => (
-                <AppCard
-                  key={app.app_id}
-                  app_id={app.app_id}
-                  spreadsheet_id={app.spreadsheet_id}
-                  created_at={app.created_at}
-                />
-              ))}
-            </div>
-          ) : null}
+          <div id="appsContainer" style={gridStyle} />
+          <div id="loadError" style={errorBannerStyle} />
         </section>
 
         {/* Footer */}
@@ -108,41 +70,107 @@ export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, lo
           <span>·</span>
           <a href="/docs">Docs</a>
           <span>·</span>
-          <a href="https://github.com/slashtechno/gsdb" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://github.com/slashtechno/gsdb" target="_blank">GitHub</a>
         </footer>
       </div>
 
-      {/* Admin secret modal — shows if no secret in localStorage */}
+      {/* Modal */}
       <AdminSecretModal onSubmit="setAdminSecret()" />
 
       <script>{`
-        // Load admin secret from localStorage; prompt if missing
-        function initAdminAuth() {
+        function showModal() {
+          document.getElementById('adminModal').style.display = 'block';
+          document.getElementById('modalBackdrop').style.display = 'block';
+          document.getElementById('dashboardContent').style.display = 'none';
+          document.getElementById('secretInput').focus();
+        }
+
+        function hideModal() {
+          document.getElementById('adminModal').style.display = 'none';
+          document.getElementById('modalBackdrop').style.display = 'none';
+          document.getElementById('dashboardContent').style.display = 'flex';
+        }
+
+        async function setAdminSecret() {
+          const secret = document.getElementById('secretInput').value;
+          const errorEl = document.getElementById('modalError');
+          errorEl.style.display = 'none';
+          errorEl.textContent = '';
+
+          if (!secret) return;
+
+          try {
+            const res = await fetch('/manage/apps', {
+              method: 'GET',
+              headers: { 'X-Admin-Secret': secret },
+            });
+
+            if (res.ok) {
+              localStorage.setItem('gsdb_admin_secret', secret);
+              hideModal();
+              loadApps();
+            } else if (res.status === 403) {
+              errorEl.textContent = 'Invalid admin secret';
+              errorEl.style.display = 'block';
+              document.getElementById('secretInput').value = '';
+            } else {
+              errorEl.textContent = 'Error validating secret';
+              errorEl.style.display = 'block';
+            }
+          } catch (err) {
+            errorEl.textContent = 'Error: ' + (err instanceof Error ? err.message : 'unknown');
+            errorEl.style.display = 'block';
+          }
+        }
+
+        async function loadApps() {
           const secret = localStorage.getItem('gsdb_admin_secret');
           if (!secret) {
-            document.getElementById('adminModal').style.display = 'flex';
-            document.getElementById('secretInput').focus();
-          } else {
-            document.getElementById('adminModal').style.display = 'none';
+            showModal();
+            return;
+          }
+
+          try {
+            const res = await fetch('/manage/apps', {
+              headers: { 'X-Admin-Secret': secret },
+            });
+
+            if (res.ok) {
+              const data = await res.json();
+              renderApps(data.apps || []);
+            } else if (res.status === 403) {
+              localStorage.removeItem('gsdb_admin_secret');
+              showModal();
+            } else {
+              document.getElementById('loadError').textContent = 'Failed to load apps';
+              document.getElementById('loadError').style.display = 'block';
+            }
+          } catch (err) {
+            document.getElementById('loadError').textContent = 'Error: ' + (err instanceof Error ? err.message : 'unknown');
+            document.getElementById('loadError').style.display = 'block';
           }
         }
 
-        // Save admin secret and close modal
-        function setAdminSecret() {
-          const secret = document.getElementById('secretInput').value;
-          if (secret) {
-            localStorage.setItem('gsdb_admin_secret', secret);
-            document.getElementById('adminModal').style.display = 'none';
+        function renderApps(apps) {
+          const container = document.getElementById('appsContainer');
+          if (!apps.length) {
+            container.innerHTML = '<div style="text-align:center;color:#666;padding:32px">No apps yet. Create one to get started.</div>';
+            return;
           }
+          container.innerHTML = apps.map(app => \`
+            <div style="border:1px solid #2a2d3d;border-radius:8px;padding:16px;background:#1a1d27">
+              <div style="font-weight:600;margin-bottom:8px">\${app.app_id}</div>
+              <div style="font-size:12px;color:#666">Sheet: \${app.spreadsheet_id}</div>
+              <div style="font-size:11px;color:#555;margin-top:8px">\${new Date(app.created_at).toLocaleDateString()}</div>
+            </div>
+          \`).join('');
         }
 
-        // Clear admin secret (e.g., via logout button)
         window.clearAdminSecret = function() {
           localStorage.removeItem('gsdb_admin_secret');
           location.reload();
         };
 
-        // Patch fetch to include X-Admin-Secret header
         const originalFetch = window.fetch;
         window.fetch = function(resource, init) {
           const secret = localStorage.getItem('gsdb_admin_secret');
@@ -154,8 +182,16 @@ export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, lo
           return originalFetch.apply(this, arguments);
         };
 
-        // Initialize on page load
-        initAdminAuth();
+        function init() {
+          const secret = localStorage.getItem('gsdb_admin_secret');
+          if (!secret) {
+            showModal();
+          } else {
+            loadApps();
+          }
+        }
+
+        init();
       `}</script>
     </Layout>
   );
@@ -166,42 +202,38 @@ const containerStyle = {
   maxWidth: '900px',
   margin: '0 auto',
   padding: '40px 24px',
-  display: 'flex',
+  display: 'flex' as const,
   flexDirection: 'column' as const,
   gap: '32px',
 };
+
 const headerStyle = {
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'flex-start',
+  gap: '24px',
 };
+
 const logoStyle = { fontSize: '28px', fontWeight: '800', letterSpacing: '-1px' };
 const accentStyle = { color: '#6c63ff' };
 const taglineStyle = { color: '#94a3b8', fontSize: '14px', marginTop: '4px' };
+
 const headerActionsStyle = { display: 'flex', alignItems: 'center', gap: '12px' };
-const loginBtnStyle = {
+
+const logoutBtnStyle = {
   background: '#6c63ff',
   color: '#fff',
-  padding: '8px 18px',
-  borderRadius: '8px',
-  fontSize: '14px',
-  fontWeight: '600',
-  textDecoration: 'none',
-};
-const authBadgeStyle = {
-  color: '#22c55e',
+  border: 'none',
+  padding: '8px 16px',
+  borderRadius: '6px',
   fontSize: '13px',
-  fontWeight: '600',
-  background: 'rgba(34,197,94,0.1)',
-  padding: '6px 12px',
-  borderRadius: '20px',
+  cursor: 'pointer',
 };
 
-// The highly-visible CTA required by spec
 const ctaBoxStyle = {
-  background: 'linear-gradient(135deg, rgba(108,99,255,0.15) 0%, rgba(108,99,255,0.05) 100%)',
-  border: '1.5px solid rgba(108,99,255,0.4)',
-  borderRadius: '16px',
+  background: '#1a1d27',
+  border: '1px solid #2a2d3d',
+  borderRadius: '12px',
   padding: '28px',
   display: 'flex',
   justifyContent: 'space-between',
@@ -209,9 +241,11 @@ const ctaBoxStyle = {
   gap: '24px',
   flexWrap: 'wrap' as const,
 };
+
 const ctaLeftStyle = { display: 'flex', flexDirection: 'column' as const, gap: '6px' };
 const ctaTitleStyle = { fontWeight: '700', fontSize: '16px', color: '#e2e8f0' };
 const ctaDescStyle = { color: '#94a3b8', fontSize: '13px', maxWidth: '420px' };
+
 const ctaUrlStyle = {
   fontSize: '12px',
   color: '#6c63ff',
@@ -220,6 +254,7 @@ const ctaUrlStyle = {
   borderRadius: '6px',
   fontFamily: 'var(--mono)',
 };
+
 const copyBtnStyle = {
   background: '#6c63ff',
   color: '#fff',
@@ -249,33 +284,22 @@ const quickLinkStyle = {
 
 const sectionHeaderStyle = { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' };
 const sectionTitleStyle = { fontSize: '18px', fontWeight: '700' };
-const countBadgeStyle = {
-  background: '#2a2d3d',
-  color: '#94a3b8',
-  padding: '2px 10px',
-  borderRadius: '12px',
+
+const createBtnStyle = {
+  background: '#6c63ff',
+  color: '#fff',
+  border: 'none',
+  padding: '8px 16px',
+  borderRadius: '6px',
   fontSize: '13px',
+  cursor: 'pointer',
+  marginLeft: 'auto',
 };
 
-const emptyStateStyle = {
-  background: '#1a1d27',
-  border: '1px dashed #2a2d3d',
-  borderRadius: '12px',
-  padding: '48px 32px',
-  textAlign: 'center' as const,
-  display: 'flex',
-  flexDirection: 'column' as const,
-  gap: '8px',
-};
-const emptyTitleStyle = { fontWeight: '600', color: '#e2e8f0' };
-const emptyDescStyle = { color: '#64748b', fontSize: '14px' };
-const inlineCodeStyle = {
-  background: '#0f1117',
-  padding: '2px 6px',
-  borderRadius: '4px',
-  fontFamily: 'var(--mono)',
-  fontSize: '13px',
-  color: '#6c63ff',
+const gridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+  gap: '16px',
 };
 
 const errorBannerStyle = {
@@ -286,12 +310,6 @@ const errorBannerStyle = {
   color: '#fca5a5',
   fontSize: '14px',
   marginBottom: '16px',
-};
-
-const gridStyle = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-  gap: '16px',
 };
 
 const footerStyle = {
