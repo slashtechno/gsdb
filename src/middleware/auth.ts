@@ -24,6 +24,11 @@ export function invalidateAppsCache(): void {
   cache.delete(APPS_CACHE_KEY);
 }
 
+// Call after key rotation so the old per-token cache entry can't bypass the hash check.
+export function invalidateAppTokens(appId: string): void {
+  cache.deleteByPrefix(`auth:${appId}:`);
+}
+
 // Validates the Bearer token against the Master Sheet app registry.
 export const appAuthMiddleware = createMiddleware<Env>(async (c, next) => {
   const authHeader = c.req.header('Authorization');
@@ -58,6 +63,9 @@ export const appAuthMiddleware = createMiddleware<Env>(async (c, next) => {
 
 // Protects /manage/* routes with a static secret passed as X-Admin-Secret header.
 export const adminAuthMiddleware = createMiddleware<Env>(async (c, next) => {
+  if (!c.env.ADMIN_SECRET) {
+    return c.json({ error: 'Server misconfigured: ADMIN_SECRET env var is not set' }, 500);
+  }
   const secret = c.req.header('X-Admin-Secret');
   if (!secret || secret !== c.env.ADMIN_SECRET) {
     return c.json({ error: 'Forbidden' }, 403);

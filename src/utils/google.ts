@@ -14,7 +14,6 @@ const MASTER_HEADERS = ['app_id', 'spreadsheet_id', 'api_key_hash', 'created_at'
 
 export class GoogleClient {
   // Mints a short-lived access token from the stored refresh token.
-  // The refresh token lives as GOOGLE_REFRESH_TOKEN in your Vercel env vars.
   static async getAccessToken(env: Env['Bindings']): Promise<string> {
     if (!env.GOOGLE_REFRESH_TOKEN) {
       throw new Error('GOOGLE_REFRESH_TOKEN is not set. Visit /auth/login to obtain one.');
@@ -36,8 +35,7 @@ export class GoogleClient {
     return data.access_token;
   }
 
-  // Queries a user's spreadsheet tab using the GViz SQL dialect.
-  // Google wraps the response in a /*O_o*/ JSONP guard that we strip before parsing.
+  // Queries a user's spreadsheet tab using the GViz SQL dialect (kept for internal/legacy use).
   static async query(
     env: Env['Bindings'],
     sheetId: string,
@@ -53,7 +51,6 @@ export class GoogleClient {
     if (!res.ok) throw new Error(`Sheets query failed: ${res.status}`);
 
     const text = await res.text();
-    // Strip the JSONP wrapper before parsing
     const json = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
     const data = JSON.parse(json) as GVizResponse;
 
@@ -65,7 +62,7 @@ export class GoogleClient {
     });
   }
 
-  // Appends rows to a user spreadsheet tab.
+  // Appends raw rows to a spreadsheet range (used internally for the master sheet).
   static async append(
     env: Env['Bindings'],
     sheetId: string,
@@ -85,8 +82,226 @@ export class GoogleClient {
     if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
   }
 
+  // Appends a single record row to a user tab, mapping values to existing column headers.
+  // If the tab has no headers yet, values are inserted in key-insertion order.
+  static async appendRow(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    record: Record<string, unknown>
+  ): Promise<void> {
+    const token = await this.getAccessToken(env);
+    const headers = await this.fetchHeaders(token, spreadsheetId, tab);
+
+    const row = headers.length > 0
+      ? headers.map((h) => record[h] !== undefined ? record[h] : null)
+      : Object.values(record);
+
+    const url =
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/` +
+      `${encodeURIComponent(tab)}:append?valueInputOption=RAW`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [row] }),
+    });
+    if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
+  }
+
+  // Reads all data rows from a tab via the values API. Returns named objects with a _row field
+  // (1-indexed API row number; row 1 = sheet row 2 because row 1 is the header).
+  static async getRows(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string
+  ): Promise<{ _row: number; [key: string]: unknown }[]> {
+    const token = await this.getAccessToken(env);
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) throw new Error(`Sheets read failed: ${res.status}`);
+
+    const data = (await res.json()) as SheetValuesResponse;
+    const rows = data.values ?? [];
+    if (rows.length < 2) return []; // only header or empty
+
+    const headers = rows[0].map(String);
+    return rows.slice(1).map((row, i) => {
+      const record: { _row: number; [key: string]: unknown } = { _row: i + 1 };
+      headers.forEach((h, j) => { record[h] = row[j] ?? null; });
+      return record;
+    });
+  }
+
+  // Returns the header row (row 1) of a tab.
+  static async getHeaders(env: Env['Bindings'], spreadsheetId: string, tab: string): Promise<string[]> {
+    const token = await this.getAccessToken(env);
+    return this.fetchHeaders(token, spreadsheetId, tab);
+  }
+
+  // Sets (overwrites) the header row and adds a warning-only protection on it.
+  // Creates the tab if it doesn't already exist.
+  static async setHeaders(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    headers: string[]
+  ): Promise<void> {
+    const token = await this.getAccessToken(env);
+    await this.ensureTab(token, spreadsheetId, tab);
+    await this.writeHeaders(token, spreadsheetId, tab, headers);
+    // Protect the header row so UI edits show a warning (API writes are never blocked)
+    await this.protectHeaderRow(token, spreadsheetId, tab);
+  }
+
+  // Adds a new column at the end of the header row.
+  static async addColumn(env: Env['Bindings'], spreadsheetId: string, tab: string, name: string): Promise<void> {
+    const token = await this.getAccessToken(env);
+    const headers = await this.fetchHeaders(token, spreadsheetId, tab);
+    if (headers.includes(name)) throw new Error(`Column "${name}" already exists`);
+    await this.writeHeaders(token, spreadsheetId, tab, [...headers, name]);
+  }
+
+  // Renames a column header in place (data rows keep their positions).
+  static async renameColumn(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    from: string,
+    to: string
+  ): Promise<void> {
+    const token = await this.getAccessToken(env);
+    const headers = await this.fetchHeaders(token, spreadsheetId, tab);
+    const idx = headers.indexOf(from);
+    if (idx === -1) throw new Error(`Column "${from}" not found`);
+    if (headers.includes(to)) throw new Error(`Column "${to}" already exists`);
+    const updated = [...headers];
+    updated[idx] = to;
+    await this.writeHeaders(token, spreadsheetId, tab, updated);
+  }
+
+  // Deletes an entire column (header + all data) — shifts subsequent columns left.
+  static async deleteColumn(env: Env['Bindings'], spreadsheetId: string, tab: string, name: string): Promise<void> {
+    const token = await this.getAccessToken(env);
+    const [headers, tabId] = await Promise.all([
+      this.fetchHeaders(token, spreadsheetId, tab),
+      this.fetchTabId(token, spreadsheetId, tab),
+    ]);
+    const idx = headers.indexOf(name);
+    if (idx === -1) throw new Error(`Column "${name}" not found`);
+
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            deleteDimension: {
+              range: { sheetId: tabId, dimension: 'COLUMNS', startIndex: idx, endIndex: idx + 1 },
+            },
+          }],
+        }),
+      }
+    );
+    if (!res.ok) throw new Error(`Failed to delete column: ${res.status}`);
+  }
+
+  // Updates a specific data row (patch semantics — only supplied fields are changed).
+  // row is 1-indexed (row 1 = first data row after the header).
+  static async updateRow(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    row: number,
+    patch: Record<string, unknown>
+  ): Promise<void> {
+    const token = await this.getAccessToken(env);
+    const headers = await this.fetchHeaders(token, spreadsheetId, tab);
+    const sheetRow = row + 1; // +1 for header
+
+    // Read the current row values
+    const colEnd = this.colLetter(headers.length);
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}!A${sheetRow}:${colEnd}${sheetRow}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!readRes.ok) throw new Error(`Failed to read row ${row}: ${readRes.status}`);
+    const readData = (await readRes.json()) as SheetValuesResponse;
+    const current = readData.values?.[0] ?? [];
+
+    // Build merged record
+    const record: Record<string, unknown> = {};
+    headers.forEach((h, i) => { record[h] = current[i] ?? null; });
+    Object.assign(record, patch);
+
+    const writeRange = `${tab}!A${sheetRow}`;
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}!A${sheetRow}?valueInputOption=RAW`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ range: writeRange, values: [headers.map((h) => record[h] ?? null)] }),
+      }
+    );
+    if (!res.ok) throw new Error(`Failed to update row ${row}: ${res.status}`);
+  }
+
+  // Deletes a specific data row, shifting subsequent rows up.
+  // row is 1-indexed (row 1 = first data row after the header).
+  static async deleteRow(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    row: number
+  ): Promise<void> {
+    const token = await this.getAccessToken(env);
+    const tabId = await this.fetchTabId(token, spreadsheetId, tab);
+    const sheetRow = row + 1; // +1 for header; batchUpdate uses 0-indexed
+
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            deleteDimension: {
+              range: { sheetId: tabId, dimension: 'ROWS', startIndex: sheetRow - 1, endIndex: sheetRow },
+            },
+          }],
+        }),
+      }
+    );
+    if (!res.ok) throw new Error(`Failed to delete row ${row}: ${res.status}`);
+  }
+
+  // Moves a spreadsheet into a Drive folder. Called after createSpreadsheet when GDRIVE_FOLDER_ID is set.
+  // Uses the access_token directly so it works with a freshly obtained token before storing it.
+  static async moveToFolder(accessToken: string, spreadsheetId: string, folderId: string): Promise<void> {
+    // Fetch current parents so we can remove them (a file can only have one parent in Drive)
+    const metaRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=parents`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const meta = (await metaRes.json()) as { parents?: string[] };
+    const removeParents = (meta.parents ?? []).join(',');
+
+    const url = new URL(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}`);
+    url.searchParams.set('addParents', folderId);
+    if (removeParents) url.searchParams.set('removeParents', removeParents);
+    url.searchParams.set('fields', 'id,parents');
+
+    const res = await fetch(url.toString(), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) throw new Error(`Failed to move spreadsheet to folder: ${res.status}`);
+  }
+
   // Creates a new Google Spreadsheet and returns its spreadsheetId.
-  // Called with an access_token directly (not env) so it works before GOOGLE_REFRESH_TOKEN is set.
   static async createSpreadsheet(accessToken: string, title: string, firstTabName?: string): Promise<string> {
     const body: Record<string, unknown> = { properties: { title } };
     if (firstTabName) body.sheets = [{ properties: { title: firstTabName } }];
@@ -103,8 +318,6 @@ export class GoogleClient {
 
   // ── Master Sheet (app registry) operations ──────────────────────────────
 
-  // Reads all registered apps from the Master Sheet.
-  // Row 1 is headers; subsequent rows are app records.
   static async getMasterSheetApps(env: Env['Bindings']): Promise<AppRecord[]> {
     const token = await this.getAccessToken(env);
     const url =
@@ -116,9 +329,8 @@ export class GoogleClient {
 
     const data = (await res.json()) as SheetValuesResponse;
     const rows = data.values ?? [];
-    // rows[0] is headers — skip it; map remaining rows to AppRecord
     return rows.slice(1)
-      .filter((r) => r[0]) // skip blank rows
+      .filter((r) => r[0])
       .map((r) => ({
         app_id: r[0] ?? '',
         spreadsheet_id: r[1] ?? '',
@@ -127,12 +339,9 @@ export class GoogleClient {
       }));
   }
 
-  // Appends a single app record to the Master Sheet.
-  // If the sheet is empty, writes the header row first.
   static async appendMasterSheetApp(env: Env['Bindings'], app: AppRecord): Promise<void> {
     const token = await this.getAccessToken(env);
 
-    // Check if sheet has headers yet
     const checkUrl =
       `https://sheets.googleapis.com/v4/spreadsheets/${env.MASTER_SHEET_ID}` +
       `/values/${MASTER_TAB}!A1`;
@@ -156,15 +365,12 @@ export class GoogleClient {
     if (!res.ok) throw new Error(`Failed to append to Master Sheet: ${res.status}`);
   }
 
-  // Overwrites the Master Sheet with the given app list (used for delete & key rotation).
-  // Clears first to remove any rows that are no longer present.
   static async rewriteMasterSheetApps(env: Env['Bindings'], apps: AppRecord[]): Promise<void> {
     const token = await this.getAccessToken(env);
     const baseUrl =
       `https://sheets.googleapis.com/v4/spreadsheets/${env.MASTER_SHEET_ID}` +
       `/values/${MASTER_TAB}`;
 
-    // Clear the sheet
     await fetch(`${baseUrl}:clear`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
@@ -172,7 +378,6 @@ export class GoogleClient {
 
     if (apps.length === 0) return;
 
-    // Write headers + all rows
     const values = [
       MASTER_HEADERS,
       ...apps.map((a) => [a.app_id, a.spreadsheet_id, a.api_key_hash, a.created_at]),
@@ -184,5 +389,112 @@ export class GoogleClient {
       body: JSON.stringify({ range: MASTER_TAB, values }),
     });
     if (!res.ok) throw new Error(`Failed to rewrite Master Sheet: ${res.status}`);
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────────────
+
+  // Converts a 1-indexed column number to a letter (1→A, 26→Z, 27→AA …)
+  private static colLetter(n: number): string {
+    let s = '';
+    while (n > 0) {
+      n--;
+      s = String.fromCharCode(65 + (n % 26)) + s;
+      n = Math.floor(n / 26);
+    }
+    return s;
+  }
+
+  // Creates a tab in the spreadsheet if it does not already exist.
+  // If the spreadsheet still has Google's default "Sheet1" placeholder, removes it in the same request.
+  private static async ensureTab(token: string, spreadsheetId: string, tab: string): Promise<void> {
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) throw new Error(`Failed to get spreadsheet metadata: ${res.status}`);
+    const data = (await res.json()) as { sheets: { properties: { title: string; sheetId: number } }[] };
+    if (data.sheets.some((s) => s.properties.title === tab)) return;
+
+    const requests: unknown[] = [{ addSheet: { properties: { title: tab } } }];
+    const sheet1 = data.sheets.find((s) => s.properties.title === 'Sheet1');
+    if (sheet1) requests.push({ deleteSheet: { sheetId: sheet1.properties.sheetId } });
+
+    const addRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests }),
+      }
+    );
+    if (!addRes.ok) throw new Error(`Failed to create tab "${tab}": ${addRes.status}`);
+  }
+
+  // Returns the numeric sheetId for a named tab (required by batchUpdate operations).
+  private static async fetchTabId(token: string, spreadsheetId: string, tab: string): Promise<number> {
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) throw new Error(`Failed to get spreadsheet metadata: ${res.status}`);
+    const data = (await res.json()) as { sheets: { properties: { title: string; sheetId: number } }[] };
+    const sheet = data.sheets.find((s) => s.properties.title === tab);
+    if (!sheet) throw new Error(`Tab "${tab}" not found`);
+    return sheet.properties.sheetId;
+  }
+
+  // Reads row 1 as an array of column header names.
+  private static async fetchHeaders(token: string, spreadsheetId: string, tab: string): Promise<string[]> {
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}!1:1`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) throw new Error(`Failed to read headers: ${res.status}`);
+    const data = (await res.json()) as SheetValuesResponse;
+    return data.values?.[0]?.map(String) ?? [];
+  }
+
+  // Writes headers to row 1 (PUT overwrites exactly row 1, leaving data rows intact).
+  private static async writeHeaders(
+    token: string,
+    spreadsheetId: string,
+    tab: string,
+    headers: string[]
+  ): Promise<void> {
+    const range = `${tab}!1:1`;
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}!1:1?valueInputOption=RAW`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ range, values: [headers] }),
+      }
+    );
+    if (!res.ok) throw new Error(`Failed to write headers: ${res.status}`);
+  }
+
+  // Adds a warningOnly protected range over row 1 to discourage accidental UI edits.
+  // warningOnly = true means the API token owner can still write freely; only the UI warns humans.
+  private static async protectHeaderRow(token: string, spreadsheetId: string, tab: string): Promise<void> {
+    const tabId = await this.fetchTabId(token, spreadsheetId, tab);
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            addProtectedRange: {
+              protectedRange: {
+                range: { sheetId: tabId, startRowIndex: 0, endRowIndex: 1 },
+                description: 'gsdb header row — managed via API',
+                warningOnly: true,
+              },
+            },
+          }],
+        }),
+      }
+    );
+    if (!res.ok) throw new Error(`Failed to protect header row: ${res.status}`);
   }
 }

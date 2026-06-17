@@ -1,5 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { adminAuthMiddleware, invalidateAppsCache } from '../middleware/auth';
+import { adminAuthMiddleware, invalidateAppsCache, invalidateAppTokens } from '../middleware/auth';
 import { hashApiKey, generateApiKey } from '../utils/crypto';
 import { GoogleClient } from '../utils/google';
 import type { Env } from '../types';
@@ -46,10 +46,14 @@ manageRouter.openapi(
       return c.json({ error: 'app_id already exists' }, 409);
     }
 
-    // Create a dedicated spreadsheet for this app using the drive.file-scoped token.
-    // The app can only access sheets it creates — no access to unrelated Drive files.
+    // Create a dedicated spreadsheet using the drive.file-scoped token.
     const accessToken = await GoogleClient.getAccessToken(c.env);
     const spreadsheet_id = await GoogleClient.createSpreadsheet(accessToken, app_id);
+
+    // Optionally move the new sheet into a specific Drive folder.
+    if (c.env.GDRIVE_FOLDER_ID) {
+      await GoogleClient.moveToFolder(accessToken, spreadsheet_id, c.env.GDRIVE_FOLDER_ID);
+    }
 
     const apiKey = generateApiKey();
     const api_key_hash = await hashApiKey(apiKey);
@@ -123,6 +127,7 @@ manageRouter.openapi(
 
     await GoogleClient.rewriteMasterSheetApps(c.env, apps.filter((a) => a.app_id !== app_id));
     invalidateAppsCache();
+    invalidateAppTokens(app_id);
     return c.json({ success: true });
   }
 );
@@ -156,6 +161,7 @@ manageRouter.openapi(
 
     await GoogleClient.rewriteMasterSheetApps(c.env, apps);
     invalidateAppsCache();
+    invalidateAppTokens(app_id);
     return c.json({ app_id, api_key: apiKey });
   }
 );

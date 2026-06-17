@@ -10,6 +10,7 @@ function getBindings(): Env['Bindings'] {
     GOOGLE_REFRESH_TOKEN: process.env.GOOGLE_REFRESH_TOKEN ?? '',
     MASTER_SHEET_ID: process.env.MASTER_SHEET_ID ?? '',
     ADMIN_SECRET: process.env.ADMIN_SECRET ?? '',
+    GDRIVE_FOLDER_ID: process.env.GDRIVE_FOLDER_ID,
     S3_BUCKET: process.env.S3_BUCKET,
     S3_REGION: process.env.S3_REGION,
     S3_ENDPOINT: process.env.S3_ENDPOINT,

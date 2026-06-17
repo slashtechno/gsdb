@@ -11,6 +11,8 @@ export type Env = {
     // ID of the Google Sheet that stores the app registry (app_id, spreadsheet_id, api_key_hash).
     MASTER_SHEET_ID: string;
     ADMIN_SECRET: string;
+    // Optional: move all created sheets into this Drive folder (folder ID from the URL)
+    GDRIVE_FOLDER_ID?: string;
     // Optional S3-compatible file storage (AWS S3, Cloudflare R2, Backblaze B2, MinIO, etc.)
     S3_BUCKET?: string;
     S3_REGION?: string;

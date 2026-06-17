@@ -6,10 +6,7 @@
   "main": "src/index.ts",
   "scripts": {
     "dev": "bun run platform/node.ts",
-    "dev:cf": "wrangler dev platform/cloudflare.ts",
-    "deploy:cf": "wrangler deploy platform/cloudflare.ts",
-    "build": "bun build src/index.ts --outdir dist",
-    "db:migrate": "wrangler d1 execute gsdb-db --file=schema.sql",
+    "demo": "bun scripts/demo.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
