@@ -138,7 +138,7 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
             if (res.ok) {
               const data = await res.json();
               document.getElementById('loadError').style.display = 'none';
-              renderApps(data.apps || []);
+              renderApps(data || []);
             } else if (res.status === 403) {
               localStorage.removeItem('gsdb_admin_secret');
               showModal();
