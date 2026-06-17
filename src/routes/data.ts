@@ -170,10 +170,13 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
-    const { app_id } = c.req.valid('param');
-    const spreadsheetId = c.get('spreadsheet_id');
-    const tables = await GoogleClient.listTabs(c.env, spreadsheetId);
-    return c.json({ tables });
+    try {
+      const spreadsheetId = c.get('spreadsheet_id');
+      const tables = await GoogleClient.listTabs(c.env, spreadsheetId);
+      return c.json({ tables });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to list tables' }, 500);
+    }
   }
 );
 
@@ -205,17 +208,18 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
-    const { app_id } = c.req.valid('param');
-    const { table } = c.req.valid('json');
-    const spreadsheetId = c.get('spreadsheet_id');
-
-    const existingTables = await GoogleClient.listTabs(c.env, spreadsheetId);
-    if (existingTables.includes(table)) {
-      return c.json({ error: 'Table already exists' }, 400);
+    try {
+      const { table } = c.req.valid('json');
+      const spreadsheetId = c.get('spreadsheet_id');
+      const existingTables = await GoogleClient.listTabs(c.env, spreadsheetId);
+      if (existingTables.includes(table)) {
+        return c.json({ error: 'Table already exists' }, 400);
+      }
+      await GoogleClient.createTab(c.env, spreadsheetId, table);
+      return c.json({ table, message: 'Table created successfully' }, 201);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to create table' }, 500);
     }
-
-    await GoogleClient.createTab(c.env, spreadsheetId, table);
-    return c.json({ table, message: 'Table created successfully' }, 201);
   }
 );
 
@@ -241,20 +245,21 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
-    const { app_id, table } = c.req.valid('param');
-    const spreadsheetId = c.get('spreadsheet_id');
-
-    const existingTables = await GoogleClient.listTabs(c.env, spreadsheetId);
-    if (!existingTables.includes(table)) {
-      return c.json({ error: 'Table not found' }, 404);
+    try {
+      const { table } = c.req.valid('param');
+      const spreadsheetId = c.get('spreadsheet_id');
+      const existingTables = await GoogleClient.listTabs(c.env, spreadsheetId);
+      if (!existingTables.includes(table)) {
+        return c.json({ error: 'Table not found' }, 404);
+      }
+      if (existingTables.length <= 1) {
+        return c.json({ error: 'Cannot delete the last remaining table' }, 400);
+      }
+      await GoogleClient.deleteTab(c.env, spreadsheetId, table);
+      return c.json({ success: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to delete table' }, 500);
     }
-
-    if (existingTables.length <= 1) {
-      return c.json({ error: 'Cannot delete the last remaining table' }, 400);
-    }
-
-    await GoogleClient.deleteTab(c.env, spreadsheetId, table);
-    return c.json({ success: true });
   }
 );
 
@@ -349,10 +354,14 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
-    const { table_name } = c.req.valid('param');
-    const spreadsheetId = c.get('spreadsheet_id');
-    const rows = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
-    return c.json(rows);
+    try {
+      const { table_name } = c.req.valid('param');
+      const spreadsheetId = c.get('spreadsheet_id');
+      const rows = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
+      return c.json(rows);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to read rows' }, 500);
+    }
   }
 );
 
@@ -385,11 +394,15 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
-    const { table_name } = c.req.valid('param');
-    const body = c.req.valid('json');
-    const spreadsheetId = c.get('spreadsheet_id');
-    await GoogleClient.appendRow(c.env, spreadsheetId, table_name, body);
-    return c.json({ success: true }, 201);
+    try {
+      const { table_name } = c.req.valid('param');
+      const body = c.req.valid('json');
+      const spreadsheetId = c.get('spreadsheet_id');
+      await GoogleClient.appendRow(c.env, spreadsheetId, table_name, body);
+      return c.json({ success: true }, 201);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Failed to append row' }, 500);
+    }
   }
 );
 
