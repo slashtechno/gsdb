@@ -1,4 +1,4 @@
-note: I heavily used AI to make this as a proof of concept. I'm not advocaing for production use, I just wanted to try to use Google Sheets as a db for a personal project. 
+note: I heavily used AI to make this as a proof of concept and to create small DBs for small projects. This is not meant to be used in anything critical.
 
 # gsdb
 
