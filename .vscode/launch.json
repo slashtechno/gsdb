@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Start the dev server and open the UI in a browser
+      "name": "Dev Server",
+      "type": "bun",
+      "request": "launch",
+      "program": "${workspaceFolder}/platform/node.ts",
+      "env": { "NODE_ENV": "development" },
+      "watchMode": false
+    },
+    {
+      // Same as above but with the Bun debugger attached (breakpoints work)
+      "name": "Debug Dev Server",
+      "type": "bun",
+      "request": "launch",
+      "program": "${workspaceFolder}/platform/node.ts",
+      "watchMode": false,
+      "internalConsoleOptions": "openOnSessionStart"
+    },
+    {
+      // Run the type-checker as a task so errors show in the Problems panel
+      "name": "Type Check",
+      "type": "bun",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/.bin/tsc",
+      "args": ["--noEmit", "--watch"],
+      "watchMode": false
+    }
+  ]
+}
