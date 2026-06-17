@@ -107,7 +107,7 @@ export const Dashboard: FC<DashboardProps> = ({ apps, authenticated, baseUrl, lo
           <span>·</span>
           <a href="/docs">Docs</a>
           <span>·</span>
-          <a href="https://github.com" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://github.com/slashtechno/gsdb" target="_blank" rel="noreferrer">GitHub</a>
         </footer>
       </div>
     </Layout>

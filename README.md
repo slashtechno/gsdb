@@ -2,7 +2,7 @@ note: I heavily used AI to make this as a proof of concept. I'm not advocaing fo
 
 # gsdb
 
-A serverless REST proxy that turns any Google Sheet into an API endpoint. Deploy to Vercel by linking this repo — no database or KV store required.
+A serverless REST proxy that turns any Google Sheet into an API endpoint.
 
 ---
 
