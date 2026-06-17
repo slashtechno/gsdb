@@ -38,14 +38,14 @@ export class GoogleClient {
   // Queries a user's spreadsheet tab using the GViz SQL dialect.
   // Accepts header names in SQL (e.g., "SELECT name, email WHERE role = 'admin'") and
   // translates them to column letters (A, B, C...) for the GViz API.
-  // Always returns all columns plus _row — SELECT column projection is ignored in favor of
-  // correct _row tracking (GViz has no row-number function, so we match back to getRows()).
+  // Does NOT return _row — GViz has no row-number function and loading the full sheet
+  // to match back would be O(n) per query. Use GET /{table} when you need _row.
   static async query(
     env: Env['Bindings'],
     sheetId: string,
     tab: string,
     sql: string
-  ): Promise<{ _row: number; [key: string]: unknown }[]> {
+  ): Promise<Record<string, unknown>[]> {
     const token = await this.getAccessToken(env);
 
     // Fetch headers to map names to column letters
@@ -64,12 +64,9 @@ export class GoogleClient {
       translatedSql = translatedSql.replace(regex, colLetter);
     }
 
-    // Always use SELECT * so row.c[i] aligns with headers[i] and we get all values for matching
-    const gvizSql = this.toSelectStar(translatedSql);
-
     const url =
       `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq` +
-      `?sheet=${encodeURIComponent(tab)}&tq=${encodeURIComponent(gvizSql)}`;
+      `?sheet=${encodeURIComponent(tab)}&tq=${encodeURIComponent(translatedSql)}`;
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`Sheets query failed: ${res.status}`);
@@ -78,37 +75,14 @@ export class GoogleClient {
     const json = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
     const data = JSON.parse(json) as GVizResponse;
 
-    // Fetch all rows via Sheets API to get _row indices for matching.
-    // Use the token we already have rather than calling getRows() which re-fetches a token.
-    const rawRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(tab)}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!rawRes.ok) throw new Error(`Sheets read failed: ${rawRes.status}`);
-    const rawData = (await rawRes.json()) as SheetValuesResponse;
-    const rawRows = rawData.values ?? [];
-    const allRows: { _row: number; [key: string]: unknown }[] = rawRows.length < 2 ? [] :
-      rawRows.slice(1).map((row, i) => {
-        const r: { _row: number; [key: string]: unknown } = { _row: i + 1 };
-        headers.forEach((h, j) => { r[h] = row[j] ?? null; });
-        return r;
+    // Use data.table.cols[i].label for column names — correct when SELECT projects
+    // a subset of columns (cols[i] reflects the actual returned columns, not all headers).
+    return data.table.rows.map((row) => {
+      const item: Record<string, unknown> = {};
+      row.c.forEach((cell, i) => {
+        const label = data.table.cols[i]?.label;
+        if (label) item[label] = cell?.v ?? null;
       });
-
-    // For each GViz result row, find the matching sheet row by value comparison.
-    // usedIndices prevents the same sheet row from matching twice (handles duplicates).
-    const usedIndices = new Set<number>();
-    return data.table.rows.map((gvizRow) => {
-      const item: { _row: number; [key: string]: unknown } = { _row: -1 };
-      gvizRow.c.forEach((cell, i) => { if (headers[i]) item[headers[i]] = cell?.v ?? null; });
-
-      const matchIdx = allRows.findIndex((r, idx) => {
-        if (usedIndices.has(idx)) return false;
-        return headers.every((h) => String(r[h] ?? '') === String(item[h] ?? ''));
-      });
-      if (matchIdx !== -1) {
-        item._row = allRows[matchIdx]._row;
-        usedIndices.add(matchIdx);
-      }
       return item;
     });
   }
@@ -492,15 +466,6 @@ export class GoogleClient {
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────
-
-  // Strips the SELECT column list and replaces it with SELECT *, preserving
-  // WHERE / ORDER BY / LIMIT / OFFSET and other trailing clauses.
-  private static toSelectStar(sql: string): string {
-    if (!sql.trim()) return 'SELECT *';
-    const rest = sql.match(/\s+(WHERE|ORDER\s+BY|GROUP\s+BY|PIVOT|LIMIT|OFFSET|SKIPPING|LABEL|FORMAT|OPTIONS)\b/i);
-    if (!rest || rest.index === undefined) return 'SELECT *';
-    return `SELECT * ${sql.slice(rest.index).trim()}`;
-  }
 
   // Converts a 1-indexed column number to a letter (1→A, 26→Z, 27→AA …)
   private static colLetter(n: number): string {

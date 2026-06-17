@@ -304,8 +304,8 @@ dataRouter.openapi(
     },
     responses: {
       200: {
-        description: 'Query results',
-        content: { 'application/json': { schema: z.object({ rows: z.array(RowSchema) }) } },
+        description: 'Query results. Does not include _row — use GET /{table_name} when you need _row for mutations.',
+        content: { 'application/json': { schema: z.object({ rows: z.array(z.record(z.unknown())) }) } },
       },
       400: { description: 'Bad request (invalid SQL or table not found)' },
       401: { description: 'Unauthorized' },
