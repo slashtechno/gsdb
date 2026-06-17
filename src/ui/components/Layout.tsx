@@ -9,7 +9,7 @@ export const Layout: FC<PropsWithChildren<{ title?: string }>> = ({
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>{title}</title>
-      <style>{`
+      <style dangerouslySetInnerHTML={{ __html: `
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
           --bg: #0f1117;
@@ -33,7 +33,7 @@ export const Layout: FC<PropsWithChildren<{ title?: string }>> = ({
         a { color: var(--accent); text-decoration: none; }
         a:hover { text-decoration: underline; }
         code, pre { font-family: var(--mono); }
-      `}</style>
+      ` }} />
     </head>
     <body>{children}</body>
   </html>

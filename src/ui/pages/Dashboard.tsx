@@ -77,7 +77,7 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
       {/* Modal */}
       <AdminSecretModal onSubmit="setAdminSecret()" />
 
-      <script>{`
+      <script dangerouslySetInnerHTML={{ __html: `
         function showModal() {
           document.getElementById('adminModal').style.display = 'block';
           document.getElementById('modalBackdrop').style.display = 'block';
@@ -192,7 +192,7 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
         }
 
         init();
-      `}</script>
+      ` }} />
     </Layout>
   );
 };

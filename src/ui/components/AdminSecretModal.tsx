@@ -52,7 +52,7 @@ export const AdminSecretModal: FC<AdminSecretModalProps> = ({ onSubmit }) => {
             boxSizing: 'border-box',
             marginBottom: '16px',
           }}
-          onkeypress={`if (event.key === 'Enter') ${onSubmit}()`}
+          onkeypress={`if (event.key === 'Enter') ${onSubmit.replace('()', '')}()`}
         />
         <button
           onclick={onSubmit}
