@@ -34,6 +34,7 @@ dataRouter.openapi(
     tags: ['Schema'],
     summary: 'Return column headers for a sheet tab',
     middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
     request: { params: tableParams },
     responses: {
       200: {
@@ -60,6 +61,7 @@ dataRouter.openapi(
     tags: ['Schema'],
     summary: 'Set (replace) the column headers for a sheet tab. Protects the header row from UI edits.',
     middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
     request: {
       params: tableParams,
       body: {
@@ -98,6 +100,7 @@ dataRouter.openapi(
     tags: ['Schema'],
     summary: 'Add, rename, or remove a single column. op: "add" | "rename" | "remove".',
     middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
     request: {
       params: tableParams,
       body: {
@@ -144,6 +147,7 @@ dataRouter.openapi(
     tags: ['Data'],
     summary: 'Read all rows from a sheet tab. Each row includes _row (use this for PATCH/DELETE).',
     middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
     request: { params: tableParams },
     responses: {
       200: {
@@ -170,6 +174,7 @@ dataRouter.openapi(
     tags: ['Data'],
     summary: 'Append a row. Values are mapped to existing column headers by key name (order-independent).',
     middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
     request: {
       params: tableParams,
       body: {
@@ -206,6 +211,7 @@ dataRouter.openapi(
     tags: ['Data'],
     summary: 'Partially update a row. Only supplied fields are changed; others are preserved.',
     middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
     request: {
       params: rowParams,
       body: {
@@ -248,6 +254,7 @@ dataRouter.openapi(
     tags: ['Data'],
     summary: 'Delete a row by its _row index. Subsequent rows shift up (row numbers change).',
     middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
     request: { params: rowParams },
     responses: {
       200: {

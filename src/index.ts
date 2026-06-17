@@ -14,6 +14,20 @@ const app = new OpenAPIHono<Env>();
 app.use('*', logger());
 app.use('*', cors());
 
+// Register security schemes in OpenAPI components
+app.openAPIRegistry.registerComponent('securitySchemes', 'ApiKeyAuth', {
+  type: 'http',
+  scheme: 'bearer',
+  bearerFormat: 'API Key',
+  description: 'API key from app registration (POST /manage/apps). Use as Bearer token in Authorization header.',
+});
+app.openAPIRegistry.registerComponent('securitySchemes', 'AdminSecretAuth', {
+  type: 'apiKey',
+  in: 'header',
+  name: 'X-Admin-Secret',
+  description: 'Admin secret from ADMIN_SECRET env var. Used for /manage/* endpoints.',
+});
+
 // OpenAPI spec & Swagger UI
 app.doc('/openapi.json', {
   openapi: '3.0.0',
@@ -25,6 +39,7 @@ app.doc('/openapi.json', {
       'Use this OpenAPI schema URL with any LLM or coding agent to enable full database access.',
   },
   servers: [{ url: '/', description: 'Current server' }],
+  security: [{ ApiKeyAuth: [] }],
 });
 
 app.get('/docs', swaggerUI({ url: '/openapi.json' }));

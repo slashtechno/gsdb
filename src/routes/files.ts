@@ -30,6 +30,7 @@ const uploadRoute = createRoute({
   tags: ['Files'],
   summary: 'Upload a file to S3-compatible storage',
   middleware: [appAuthMiddleware] as const,
+  security: [{ ApiKeyAuth: [] }],
   request: {
     params: z.object({
       app_id: z.string(),
@@ -76,6 +77,7 @@ const downloadRoute = createRoute({
   tags: ['Files'],
   summary: 'Get a pre-signed download URL (1 hour)',
   middleware: [appAuthMiddleware] as const,
+  security: [{ ApiKeyAuth: [] }],
   request: {
     params: z.object({
       app_id: z.string(),
@@ -119,6 +121,7 @@ const deleteRoute = createRoute({
   tags: ['Files'],
   summary: 'Delete a file from S3-compatible storage',
   middleware: [appAuthMiddleware] as const,
+  security: [{ ApiKeyAuth: [] }],
   request: {
     params: z.object({
       app_id: z.string(),

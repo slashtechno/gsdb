@@ -14,6 +14,7 @@ manageRouter.openapi(
     tags: ['Manage'],
     summary: 'Create a new app — gsdb creates a dedicated Google Sheet automatically',
     middleware: [adminAuthMiddleware] as const,
+    security: [{ AdminSecretAuth: [] }],
     request: {
       body: {
         content: {
@@ -78,6 +79,7 @@ manageRouter.openapi(
     tags: ['Manage'],
     summary: 'List all registered apps',
     middleware: [adminAuthMiddleware] as const,
+    security: [{ AdminSecretAuth: [] }],
     responses: {
       200: {
         description: 'App list (api_key_hash omitted)',
@@ -111,6 +113,7 @@ manageRouter.openapi(
     tags: ['Manage'],
     summary: 'Remove an app registration',
     middleware: [adminAuthMiddleware] as const,
+    security: [{ AdminSecretAuth: [] }],
     request: { params: z.object({ app_id: z.string() }) },
     responses: {
       200: { description: 'Deleted', content: { 'application/json': { schema: z.object({ success: z.boolean() }) } } },
@@ -140,6 +143,7 @@ manageRouter.openapi(
     tags: ['Manage'],
     summary: 'Issue a new API key for an app (old key is immediately invalidated)',
     middleware: [adminAuthMiddleware] as const,
+    security: [{ AdminSecretAuth: [] }],
     request: { params: z.object({ app_id: z.string() }) },
     responses: {
       200: {
