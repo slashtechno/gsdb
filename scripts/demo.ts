@@ -10,7 +10,7 @@
  * On error, teardown still runs so you don't leave orphaned apps.
  */
 
-import readline from 'readline';
+import * as readline from 'readline';
 import app from '../src/index';
 import type { Env } from '../src/types';
 
@@ -84,12 +84,47 @@ const api = (method: string, path: string, body?: unknown) =>
 async function teardown() {
   sep('teardown');
   try {
+    // First, get the spreadsheet_id from the registry before deleting the app
+    const apps = await admin('GET', '/manage/apps') as { app_id: string; spreadsheet_id: string }[];
+    const app = apps.find((a) => a.app_id === APP_ID);
+    const spreadsheetId = app?.spreadsheet_id;
+
     await admin('DELETE', `/manage/apps/${APP_ID}`);
-    ok(`deleted app "${APP_ID}" and its spreadsheet from the registry`);
-    note('The Google Sheet itself remains in Drive — delete it manually if desired.');
+    ok(`deleted app "${APP_ID}" from the registry`);
+
+    if (spreadsheetId) {
+      // Delete the actual Google Sheet from Drive
+      const accessToken = await getAccessToken();
+      await deleteSpreadsheet(accessToken, spreadsheetId);
+      ok(`deleted spreadsheet ${spreadsheetId} from Google Drive`);
+    }
   } catch (err) {
     console.error('  teardown failed:', err);
   }
+}
+
+async function getAccessToken(): Promise<string> {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: process.env.GOOGLE_CLIENT_ID ?? '',
+      client_secret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+      refresh_token: process.env.GOOGLE_REFRESH_TOKEN ?? '',
+      grant_type: 'refresh_token',
+    }),
+  });
+  const data = (await res.json()) as { access_token: string; error?: string };
+  if (data.error) throw new Error(`Token refresh failed: ${data.error}`);
+  return data.access_token;
+}
+
+async function deleteSpreadsheet(accessToken: string, spreadsheetId: string): Promise<void> {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${spreadsheetId}`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!res.ok) throw new Error(`Failed to delete spreadsheet: ${res.status}`);
 }
 
 // ── Output helpers ──────────────────────────────────────────────────────────
@@ -120,21 +155,37 @@ async function main() {
     const found = apps.some((a) => a.app_id === APP_ID);
     ok(`app list contains "${APP_ID}": ${found}`);
 
+    // ── Tables (tabs) CRUD ────────────────────────────────────────────────────────
+    sep('tables');
+
+    // 3. List tables (new app should only have "Sheet1" initially)
+    const tables1 = await api('GET', `/api/${APP_ID}/tables`) as { tables: string[] };
+    ok(`initial tables: ${JSON.stringify(tables1.tables)}`);
+
+    // 4. Create a new table "users"
+    await api('POST', `/api/${APP_ID}/tables`, { table: 'users' });
+    ok('created table "users"');
+
+    // 5. List tables again to confirm creation
+    const tables2 = await api('GET', `/api/${APP_ID}/tables`) as { tables: string[] };
+    ok(`tables after create: ${JSON.stringify(tables2.tables)}`);
+    note('Sheet1 is auto-deleted when first custom table is created');
+
     // ── Schema ──────────────────────────────────────────────────────────────
     sep('schema');
 
-    // 3. Initialize columns on a new tab "users"
+    // 6. Initialize columns on the new table "users"
     const schema1 = await api('PUT', `/api/${APP_ID}/users/schema`, {
       columns: ['name', 'email', 'role'],
     }) as { columns: string[] };
     ok(`columns set: ${JSON.stringify(schema1.columns)}`);
     note('header row is now protected — UI edits will show a warning');
 
-    // 4. Read schema back
+    // 7. Read schema back
     const schema2 = await api('GET', `/api/${APP_ID}/users/schema`) as { columns: string[] };
     ok(`schema read: ${JSON.stringify(schema2.columns)}`);
 
-    // 5. Add a column
+    // 8. Add a column
     const schema3 = await api('PATCH', `/api/${APP_ID}/users/schema`, {
       op: 'add', name: 'active',
     }) as { columns: string[] };
@@ -163,6 +214,28 @@ async function main() {
     const after = await api('GET', `/api/${APP_ID}/users`) as Row[];
     const alice = after.find((r) => r.name === 'Alice')!;
     ok(`confirmed: Alice role is now "${alice.role}"`);
+
+    // ── Query (GViz SQL) ──────────────────────────────────────────────────────
+    sep('query');
+
+    // 10. Query with GViz SQL using header names (auto-translated to column letters)
+    const queryResult = await api('POST', `/api/${APP_ID}/users/query`, {
+      sql: "SELECT name, email WHERE active = 'true'",
+    }) as { rows: Row[] };
+    ok(`query returned ${queryResult.rows.length} rows:`);
+    queryResult.rows.forEach((r) => note(`  ${r.name} <${r.email}>`));
+
+    // 11. Query with LIMIT
+    const limited = await api('POST', `/api/${APP_ID}/users/query`, {
+      sql: 'SELECT name, email, role LIMIT 1',
+    }) as { rows: Row[] };
+    ok(`limited query returned ${limited.rows.length} row`);
+
+    // 12. Query with ORDER BY
+    const ordered = await api('POST', `/api/${APP_ID}/users/query`, {
+      sql: "SELECT name, email ORDER BY name DESC",
+    }) as { rows: Row[] };
+    ok(`ordered query returned ${ordered.rows.length} rows`);
 
     console.log(`\n${SEP}`);
     console.log('Rows are live in the spreadsheet. Press Enter to continue with column/row ops and teardown...');

@@ -35,7 +35,9 @@ export class GoogleClient {
     return data.access_token;
   }
 
-  // Queries a user's spreadsheet tab using the GViz SQL dialect (kept for internal/legacy use).
+  // Queries a user's spreadsheet tab using the GViz SQL dialect.
+  // Accepts header names in SQL (e.g., "SELECT name, email WHERE role = 'admin'") and
+  // translates them to column letters (A, B, C...) for the GViz API.
   static async query(
     env: Env['Bindings'],
     sheetId: string,
@@ -43,9 +45,26 @@ export class GoogleClient {
     sql: string
   ): Promise<Record<string, unknown>[]> {
     const token = await this.getAccessToken(env);
+
+    // Fetch headers to map names to column letters
+    const headers = await this.fetchHeaders(token, sheetId, tab);
+    if (headers.length === 0) {
+      throw new Error('Table has no headers');
+    }
+
+    // Translate header names to column letters in the SQL
+    let translatedSql = sql;
+    for (let i = 0; i < headers.length; i++) {
+      const header = headers[i];
+      const colLetter = this.colLetter(i + 1);
+      // Replace header name (case-insensitive, word boundary) with column letter
+      const regex = new RegExp(`\\b${header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      translatedSql = translatedSql.replace(regex, colLetter);
+    }
+
     const url =
       `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq` +
-      `?sheet=${encodeURIComponent(tab)}&tq=${encodeURIComponent(sql)}`;
+      `?sheet=${encodeURIComponent(tab)}&tq=${encodeURIComponent(translatedSql)}`;
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`Sheets query failed: ${res.status}`);
@@ -54,7 +73,8 @@ export class GoogleClient {
     const json = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
     const data = JSON.parse(json) as GVizResponse;
 
-    const cols = data.table.cols.map((c) => c.label || c.id);
+    // Return results with header names as keys (not column letters)
+    const cols = headers;
     return data.table.rows.map((row) => {
       const item: Record<string, unknown> = {};
       row.c.forEach((cell, i) => { if (cols[i]) item[cols[i]] = cell?.v ?? null; });
@@ -121,7 +141,12 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!res.ok) throw new Error(`Sheets read failed: ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 400) {
+        throw new Error(`Tab "${tab}" not found`);
+      }
+      throw new Error(`Sheets read failed: ${res.status}`);
+    }
 
     const data = (await res.json()) as SheetValuesResponse;
     const rows = data.values ?? [];
@@ -133,6 +158,41 @@ export class GoogleClient {
       headers.forEach((h, j) => { record[h] = row[j] ?? null; });
       return record;
     });
+  }
+
+  // Lists all tab names in a spreadsheet.
+  static async listTabs(env: Env['Bindings'], spreadsheetId: string): Promise<string[]> {
+    const token = await this.getAccessToken(env);
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) throw new Error(`Failed to list tabs: ${res.status}`);
+    const data = (await res.json()) as { sheets: { properties: { title: string } }[] };
+    return data.sheets.map((s) => s.properties.title);
+  }
+
+  // Creates a new tab (sub-sheet) in the spreadsheet.
+  static async createTab(env: Env['Bindings'], spreadsheetId: string, tab: string): Promise<void> {
+    const token = await this.getAccessToken(env);
+    await this.ensureTab(token, spreadsheetId, tab);
+  }
+
+  // Deletes a tab (sub-sheet) from the spreadsheet.
+  static async deleteTab(env: Env['Bindings'], spreadsheetId: string, tab: string): Promise<void> {
+    const token = await this.getAccessToken(env);
+    const tabId = await this.fetchTabId(token, spreadsheetId, tab);
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{ deleteSheet: { sheetId: tabId } }],
+        }),
+      }
+    );
+    if (!res.ok) throw new Error(`Failed to delete tab: ${res.status}`);
   }
 
   // Returns the header row (row 1) of a tab.
@@ -299,6 +359,15 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!res.ok) throw new Error(`Failed to move spreadsheet to folder: ${res.status}`);
+  }
+
+  // Deletes a Google Spreadsheet from Drive.
+  static async deleteSpreadsheet(accessToken: string, spreadsheetId: string): Promise<void> {
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${spreadsheetId}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!res.ok) throw new Error(`Failed to delete spreadsheet: ${res.status}`);
   }
 
   // Creates a new Google Spreadsheet and returns its spreadsheetId.

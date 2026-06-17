@@ -6,17 +6,26 @@ import type { Env } from '../types';
 export const dataRouter = new OpenAPIHono<Env>();
 
 // Shared param schemas
-const tableParams = z.object({
+const tableNameParams = z.object({
   app_id: z.string().openapi({ example: 'my-app' }),
   table_name: z.string().openapi({ example: 'users' }),
 });
 
-const rowParams = tableParams.extend({
+const rowParams = tableNameParams.extend({
   row: z.coerce.number().int().positive().openapi({ description: '_row index from a GET response', example: 1 }),
 });
 
 // Row object returned by GET (always includes _row)
 const RowSchema = z.record(z.unknown()).and(z.object({ _row: z.number() }));
+
+// Table schemas (Google Sheets calls these "tabs", but "tables" is more intuitive for DB users)
+const tableParams = z.object({
+  app_id: z.string().openapi({ example: 'my-app' }),
+  table: z.string().openapi({ example: 'users' }),
+});
+
+const TableListSchema = z.object({ tables: z.array(z.string()) });
+const TableCreateSchema = z.object({ table: z.string().min(1).openapi({ example: 'new_table' }) });
 
 // Schema operation body — discriminated union keeps OpenAPI clean
 const SchemaOpSchema = z.discriminatedUnion('op', [
@@ -35,7 +44,7 @@ dataRouter.openapi(
     summary: 'Return column headers for a sheet tab',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
-    request: { params: tableParams },
+    request: { params: tableNameParams },
     responses: {
       200: {
         description: 'Column names in order',
@@ -63,7 +72,7 @@ dataRouter.openapi(
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
-      params: tableParams,
+      params: tableNameParams,
       body: {
         content: {
           'application/json': {
@@ -102,7 +111,7 @@ dataRouter.openapi(
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
-      params: tableParams,
+      params: tableNameParams,
       body: {
         content: { 'application/json': { schema: SchemaOpSchema } },
       },
@@ -139,6 +148,187 @@ dataRouter.openapi(
   }
 );
 
+// ── Table CRUD (tabs in Google Sheets) ──────────────────────────────────────────
+
+// GET /tables — List all tables (tabs) in the spreadsheet
+dataRouter.openapi(
+  createRoute({
+    method: 'get',
+    path: '/tables',
+    tags: ['Tables'],
+    summary: 'List all tables (tabs) in the spreadsheet',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: { params: z.object({ app_id: z.string() }) },
+    responses: {
+      200: {
+        description: 'List of table names',
+        content: { 'application/json': { schema: TableListSchema } },
+      },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { app_id } = c.req.valid('param');
+    const spreadsheetId = c.get('spreadsheet_id');
+    const tables = await GoogleClient.listTabs(c.env, spreadsheetId);
+    return c.json({ tables });
+  }
+);
+
+// POST /tables — Create a new table (tab)
+dataRouter.openapi(
+  createRoute({
+    method: 'post',
+    path: '/tables',
+    tags: ['Tables'],
+    summary: 'Create a new table (tab). Creates the table with no headers; use PUT /{table}/schema to set columns.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: {
+      params: z.object({ app_id: z.string() }),
+      body: {
+        content: {
+          'application/json': { schema: TableCreateSchema },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: 'Table created',
+        content: { 'application/json': { schema: z.object({ table: z.string(), message: z.string() }) } },
+      },
+      400: { description: 'Table already exists' },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { app_id } = c.req.valid('param');
+    const { table } = c.req.valid('json');
+    const spreadsheetId = c.get('spreadsheet_id');
+
+    const existingTables = await GoogleClient.listTabs(c.env, spreadsheetId);
+    if (existingTables.includes(table)) {
+      return c.json({ error: 'Table already exists' }, 400);
+    }
+
+    await GoogleClient.createTab(c.env, spreadsheetId, table);
+    return c.json({ table, message: 'Table created successfully' }, 201);
+  }
+);
+
+// DELETE /tables/{table} — Delete a table
+dataRouter.openapi(
+  createRoute({
+    method: 'delete',
+    path: '/tables/{table}',
+    tags: ['Tables'],
+    summary: 'Delete a table (tab) and all its data. Cannot delete the last remaining table.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: { params: tableParams },
+    responses: {
+      200: {
+        description: 'Table deleted',
+        content: { 'application/json': { schema: z.object({ success: z.boolean() }) } },
+      },
+      400: { description: 'Cannot delete the last table' },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+      404: { description: 'Table not found' },
+    },
+  }),
+  async (c) => {
+    const { app_id, table } = c.req.valid('param');
+    const spreadsheetId = c.get('spreadsheet_id');
+
+    const existingTables = await GoogleClient.listTabs(c.env, spreadsheetId);
+    if (!existingTables.includes(table)) {
+      return c.json({ error: 'Table not found' }, 404);
+    }
+
+    if (existingTables.length <= 1) {
+      return c.json({ error: 'Cannot delete the last remaining table' }, 400);
+    }
+
+    await GoogleClient.deleteTab(c.env, spreadsheetId, table);
+    return c.json({ success: true });
+  }
+);
+
+// ── Query (GViz SQL) ──────────────────────────────────────────────────────────
+
+// Basic SQL validation to prevent potential issues
+function validateSql(sql: string): string | null {
+  // GViz SQL is read-only, but we can block obviously malicious patterns
+  const lower = sql.toLowerCase();
+  const dangerous = ['drop', 'delete', 'insert', 'update', 'create', 'alter', 'grant', 'revoke', 'exec', 'execute'];
+  for (const word of dangerous) {
+    if (lower.includes(word)) return `${word.toUpperCase()} statements are not allowed in GViz SQL`;
+  }
+  if (!lower.trim().startsWith('select') && lower.trim() !== '') {
+    return 'Only SELECT queries are allowed (or empty string for all rows)';
+  }
+  return null;
+}
+
+const queryParams = z.object({
+  app_id: z.string().openapi({ example: 'my-app' }),
+  table_name: z.string().openapi({ example: 'users' }),
+});
+
+const QuerySchema = z.object({
+  sql: z.string().openapi({ 
+    example: "SELECT name, email WHERE role = 'admin'", 
+    description: 'GViz SQL query using header names (e.g., "name", "email") — automatically translated to column letters. Supports SELECT, WHERE, ORDER BY, LIMIT, OFFSET.'
+  }),
+});
+
+dataRouter.openapi(
+  createRoute({
+    method: 'post',
+    path: '/{table_name}/query',
+    tags: ['Query'],
+    summary: 'Execute a GViz SQL query on a table. Supports SELECT, WHERE, ORDER BY, LIMIT, OFFSET, etc.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: {
+      params: queryParams,
+      body: {
+        content: {
+          'application/json': { schema: QuerySchema },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: 'Query results',
+        content: { 'application/json': { schema: z.object({ rows: z.array(RowSchema) }) } },
+      },
+      400: { description: 'Bad request (invalid SQL or table not found)' },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { table_name } = c.req.valid('param');
+    const { sql } = c.req.valid('json');
+    const spreadsheetId = c.get('spreadsheet_id');
+
+    const validationError = validateSql(sql);
+    if (validationError) return c.json({ error: validationError }, 400);
+
+    try {
+      const rows = await GoogleClient.query(c.env, spreadsheetId, table_name, sql);
+      return c.json({ rows });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
+    }
+  }
+);
+
 // ── GET /{table_name} ──────────────────────────────────────────────────────
 dataRouter.openapi(
   createRoute({
@@ -148,7 +338,7 @@ dataRouter.openapi(
     summary: 'Read all rows from a sheet tab. Each row includes _row (use this for PATCH/DELETE).',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
-    request: { params: tableParams },
+    request: { params: tableNameParams },
     responses: {
       200: {
         description: 'Rows with _row indices',
@@ -176,7 +366,7 @@ dataRouter.openapi(
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
-      params: tableParams,
+      params: tableNameParams,
       body: {
         content: {
           'application/json': {
