@@ -68,7 +68,7 @@ dataRouter.openapi(
     method: 'put',
     path: '/{table_name}/schema',
     tags: ['Schema'],
-    summary: 'Set (replace) the column headers for a sheet tab. Protects the header row from UI edits.',
+    summary: 'Set (replace) the column headers for a sheet tab. Cannot remove columns — use PATCH op:remove for that. Protects the header row from UI edits.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -88,6 +88,7 @@ dataRouter.openapi(
         description: 'Headers written',
         content: { 'application/json': { schema: z.object({ columns: z.array(z.string()) }) } },
       },
+      400: { description: 'Attempted to remove columns — use PATCH op:remove instead' },
       401: { description: 'Unauthorized' },
       403: { description: 'Forbidden' },
     },
@@ -96,6 +97,22 @@ dataRouter.openapi(
     const { table_name } = c.req.valid('param');
     const { columns } = c.req.valid('json');
     const spreadsheetId = c.get('spreadsheet_id');
+
+    const current = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
+    if (columns.length < current.length) {
+      const removed = current.filter((h) => !columns.includes(h));
+      return c.json(
+        {
+          error:
+            `PUT /schema cannot remove columns — it only rewrites header labels and would ` +
+            `leave the underlying data columns in place, causing header-to-data misalignment. ` +
+            `Remove each column first with PATCH /schema { "op": "remove", "name": "<col>" }. ` +
+            `Columns missing from your request: ${removed.map((c) => `"${c}"`).join(', ')}.`,
+        },
+        400
+      );
+    }
+
     await GoogleClient.setHeaders(c.env, spreadsheetId, table_name, columns);
     return c.json({ columns });
   }
