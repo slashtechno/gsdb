@@ -174,29 +174,37 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           init();
         }
 
-        // ── Fetch wrapper (extends Dashboard's pattern) ─────────────
+        // ── Fetch wrapper ────────────────────────────────────────────
+        // For /api/{app_id}/* calls: prefer X-Admin-Secret if the admin is logged in,
+        // otherwise fall back to the per-app Bearer token.
         var originalFetch = window.fetch;
         window.fetch = function(resource, init) {
           if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/')) {
+            var secret = localStorage.getItem('gsdb_admin_secret');
             var key = getAppKey();
-            if (key) {
-              init = init || {};
-              init.headers = init.headers || {};
+            init = init || {};
+            init.headers = init.headers || {};
+            if (secret) {
+              init.headers['X-Admin-Secret'] = secret;
+            } else if (key) {
               init.headers['Authorization'] = 'Bearer ' + key;
             }
           } else if (typeof resource === 'string' && resource.startsWith('/manage')) {
-            var secret = localStorage.getItem('gsdb_admin_secret');
-            if (secret) {
+            var adminSecret = localStorage.getItem('gsdb_admin_secret');
+            if (adminSecret) {
               init = init || {};
               init.headers = init.headers || {};
-              init.headers['X-Admin-Secret'] = secret;
+              init.headers['X-Admin-Secret'] = adminSecret;
             }
           }
-          return originalFetch.apply(this, arguments).then(function(res) {
-            if (resource.startsWith && resource.startsWith('/api/' + APP_ID + '/') && (res.status === 401 || res.status === 403)) {
-              clearAppKey();
-              renderKeyBanner('API key invalid or missing. Set it again to continue.');
-              showAppKey();
+          return originalFetch.call(this, resource, init).then(function(res) {
+            if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/') && (res.status === 401 || res.status === 403)) {
+              var stillHasAdmin = !!localStorage.getItem('gsdb_admin_secret');
+              if (!stillHasAdmin) {
+                clearAppKey();
+                renderKeyBanner('API key invalid or missing. Set it again to continue.');
+                showAppKey();
+              }
             }
             return res;
           });
@@ -351,7 +359,8 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
         }
 
         function init() {
-          if (!getAppKey()) {
+          var hasAdmin = !!localStorage.getItem('gsdb_admin_secret');
+          if (!hasAdmin && !getAppKey()) {
             renderTables([]);
             showAppKey();
             return;

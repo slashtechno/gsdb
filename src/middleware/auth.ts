@@ -30,15 +30,33 @@ export function invalidateAppTokens(appId: string): void {
 }
 
 // Validates the Bearer token against the Master Sheet app registry.
+// Also accepts a valid X-Admin-Secret header as an alternative credential — the admin
+// already has full write access (rotate/delete), so read access is a lesser privilege.
 export const appAuthMiddleware = createMiddleware<Env>(async (c, next) => {
+  const appId = c.req.param('app_id');
+  if (!appId) return c.json({ error: 'Missing app_id' }, 400);
+
+  // Admin bypass: if the request carries a valid admin secret, skip the per-app key check.
+  const adminSecret = c.req.header('X-Admin-Secret');
+  if (adminSecret) {
+    if (!c.env.ADMIN_SECRET || adminSecret !== c.env.ADMIN_SECRET) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    const apps = await getApps(c.env);
+    const app = apps.find((a) => a.app_id === appId);
+    if (!app) return c.json({ error: 'App not found' }, 404);
+    c.set('spreadsheet_id', app.spreadsheet_id);
+    c.set('app_id', appId);
+    await next();
+    return;
+  }
+
   const authHeader = c.req.header('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return c.json({ error: 'Unauthorized: missing Bearer token' }, 401);
   }
 
   const apiKey = authHeader.slice(7);
-  const appId = c.req.param('app_id');
-  if (!appId) return c.json({ error: 'Missing app_id' }, 400);
 
   // Per-token fast path: avoids re-hashing on repeated requests from the same client
   const tokenCacheKey = `auth:${appId}:${apiKey}`;

@@ -153,22 +153,28 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           else { el.textContent = text; el.style.display = 'block'; }
         }
 
-        // Fetch wrapper — same pattern as AppDetail.
+        // Fetch wrapper — prefer X-Admin-Secret when admin is logged in.
         var originalFetch = window.fetch;
         window.fetch = function(resource, init) {
           if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/')) {
+            var secret = localStorage.getItem('gsdb_admin_secret');
             var key = getAppKey();
-            if (key) {
-              init = init || {};
-              init.headers = init.headers || {};
+            init = init || {};
+            init.headers = init.headers || {};
+            if (secret) {
+              init.headers['X-Admin-Secret'] = secret;
+            } else if (key) {
               init.headers['Authorization'] = 'Bearer ' + key;
             }
           }
-          return originalFetch.apply(this, arguments).then(function(res) {
+          return originalFetch.call(this, resource, init).then(function(res) {
             if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/') && (res.status === 401 || res.status === 403)) {
-              clearAppKey();
-              renderKeyBanner('API key invalid or missing.');
-              showAppKey();
+              var stillHasAdmin = !!localStorage.getItem('gsdb_admin_secret');
+              if (!stillHasAdmin) {
+                clearAppKey();
+                renderKeyBanner('API key invalid or missing.');
+                showAppKey();
+              }
             }
             return res;
           });
@@ -430,7 +436,8 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
         }
 
         function init() {
-          if (!getAppKey()) {
+          var hasAdmin = !!localStorage.getItem('gsdb_admin_secret');
+          if (!hasAdmin && !getAppKey()) {
             showAppKey();
             return;
           }
