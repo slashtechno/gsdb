@@ -419,7 +419,8 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
         }
 
         async function refreshAll() {
-          await Promise.all([loadSchema(), loadRows()]);
+          await loadSchema();
+          await loadRows();
         }
 
         // ── Key entry ───────────────────────────────────────────────
