@@ -9,7 +9,9 @@ interface AppCardProps {
 export const AppCard: FC<AppCardProps> = ({ app_id, spreadsheet_id, created_at }) => (
   <div style={cardStyle}>
     <div style={headerStyle}>
-      <span style={badgeStyle}>{app_id}</span>
+      <a href={`/ui/apps/${app_id}`} style={badgeStyle}>
+        {app_id}
+      </a>
       <span style={dateStyle}>{created_at ? new Date(created_at).toLocaleDateString() : '—'}</span>
     </div>
     <p style={sheetStyle}>
@@ -25,6 +27,9 @@ export const AppCard: FC<AppCardProps> = ({ app_id, spreadsheet_id, created_at }
     </p>
     <div style={actionsStyle}>
       <code style={endpointStyle}>/api/{app_id}/:table</code>
+      <a href={`/ui/apps/${app_id}`} style={openLinkStyle}>
+        Open →
+      </a>
     </div>
   </div>
 );
@@ -48,16 +53,32 @@ const badgeStyle = {
   fontSize: '13px',
   fontWeight: '600',
   fontFamily: 'var(--mono)',
+  textDecoration: 'none',
 };
 const dateStyle = { color: '#94a3b8', fontSize: '12px' };
 const sheetStyle = { fontSize: '13px', color: '#94a3b8' };
 const labelStyle = { color: '#64748b' };
 const linkStyle = { color: '#6c63ff', fontFamily: 'var(--mono)', fontSize: '12px' };
-const actionsStyle = { marginTop: '4px' };
+const actionsStyle = {
+  marginTop: '4px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: '8px',
+};
 const endpointStyle = {
   background: '#0f1117',
   color: '#94a3b8',
   padding: '4px 8px',
   borderRadius: '6px',
   fontSize: '12px',
+};
+const openLinkStyle = {
+  color: '#6c63ff',
+  fontSize: '13px',
+  fontWeight: 600,
+  textDecoration: 'none',
+  padding: '4px 8px',
+  borderRadius: '6px',
+  background: 'rgba(108, 99, 255, 0.1)',
 };

@@ -1,6 +1,8 @@
 import type { FC } from 'hono/jsx';
 import { Layout } from '../components/Layout';
 import { AdminSecretModal } from '../components/AdminSecretModal';
+import { PromptDialog } from '../components/PromptDialog';
+import { KeyRevealModal } from '../components/KeyRevealModal';
 
 interface DashboardProps {
   baseUrl: string;
@@ -58,7 +60,9 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
         <section>
           <div style={sectionHeaderStyle}>
             <h2 style={sectionTitleStyle}>Registered Apps</h2>
-            <button style={createBtnStyle}>+ Create App</button>
+            <button onclick="openCreateAppModal()" style={createBtnStyle}>
+              + Create App
+            </button>
           </div>
           <div id="appsContainer" style={gridStyle} />
           <div id="loadError" style={errorBannerStyle} />
@@ -74,17 +78,75 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
         </footer>
       </div>
 
-      {/* Modal */}
+      {/* Admin auth modal (existing) */}
       <AdminSecretModal onSubmit="setAdminSecret()" />
 
+      {/* Create-app flow */}
+      <PromptDialog
+        id="createApp"
+        title="Create App"
+        description="Pick an app_id — letters, digits, and dashes. You'll get a new Google Sheet and an API key."
+        inputLabel="app_id"
+        placeholder="my-app"
+        submitLabel="Create"
+        submitFn="submitCreateApp"
+      />
+      {/* Pre-rendered key reveal modal — populated by JS after POST returns.
+          Server renders it hidden with an empty key; JS overwrites the
+          code block's textContent with the response, then shows it. */}
+      <KeyRevealModal id="createAppKey" app_id="" api_key="" doneFn="doneCreateApp" doneLabel="Done" />
+
       <script dangerouslySetInnerHTML={{ __html: `
+        // ── Modal show/hide helpers (id-prefixed) ────────────────────────
+        function showId(id) {
+          document.getElementById(id + 'Modal').style.display = 'block';
+          document.getElementById(id + 'Backdrop').style.display = 'block';
+          var input = document.getElementById(id + 'Input');
+          if (input) input.focus();
+        }
+        function hideId(id) {
+          document.getElementById(id + 'Modal').style.display = 'none';
+          document.getElementById(id + 'Backdrop').style.display = 'none';
+          var err = document.getElementById(id + 'Error');
+          if (err) { err.style.display = 'none'; err.textContent = ''; }
+        }
+        function showError(id, msg) {
+          var err = document.getElementById(id + 'Error');
+          if (!err) return;
+          err.textContent = msg;
+          err.style.display = 'block';
+        }
+        function hideError(id) {
+          var err = document.getElementById(id + 'Error');
+          if (!err) return;
+          err.style.display = 'none';
+          err.textContent = '';
+        }
+        // Named wrappers for the inline onclick= attributes.
+        function showCreateApp() { showId('createApp'); }
+        function hideCreateApp() { hideId('createApp'); }
+        function showCreateAppKey() { showId('createAppKey'); }
+        function hideCreateAppKey() { hideId('createAppKey'); }
+        function openCreateAppModal() { showCreateApp(); }
+
+        // Copy helper for the key reveal modal's <code> block.
+        function copyKey(codeId) {
+          var text = document.getElementById(codeId).textContent;
+          navigator.clipboard.writeText(text).then(function() {
+            var btn = event.target;
+            var prev = btn.textContent;
+            btn.textContent = '✓ Copied!';
+            setTimeout(function() { btn.textContent = prev; }, 1500);
+          }).catch(function() {});
+        }
+
+        // ── Admin secret modal (legacy ids) ─────────────────────────────
         function showModal() {
           document.getElementById('adminModal').style.display = 'block';
           document.getElementById('modalBackdrop').style.display = 'block';
           document.getElementById('dashboardContent').style.display = 'none';
           document.getElementById('secretInput').focus();
         }
-
         function hideModal() {
           document.getElementById('adminModal').style.display = 'none';
           document.getElementById('modalBackdrop').style.display = 'none';
@@ -92,15 +154,15 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
         }
 
         async function setAdminSecret() {
-          const secret = document.getElementById('secretInput').value;
-          const errorEl = document.getElementById('modalError');
+          var secret = document.getElementById('secretInput').value;
+          var errorEl = document.getElementById('modalError');
           errorEl.style.display = 'none';
           errorEl.textContent = '';
 
           if (!secret) return;
 
           try {
-            const res = await fetch('/manage/apps', {
+            var res = await fetch('/manage/apps', {
               method: 'GET',
               headers: { 'X-Admin-Secret': secret },
             });
@@ -118,25 +180,26 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
               errorEl.style.display = 'block';
             }
           } catch (err) {
-            errorEl.textContent = 'Error: ' + (err instanceof Error ? err.message : 'unknown');
+            errorEl.textContent = 'Error: ' + (err.message || 'unknown');
             errorEl.style.display = 'block';
           }
         }
 
+        // ── Apps list ──────────────────────────────────────────────────
         async function loadApps() {
-          const secret = localStorage.getItem('gsdb_admin_secret');
+          var secret = localStorage.getItem('gsdb_admin_secret');
           if (!secret) {
             showModal();
             return;
           }
 
           try {
-            const res = await fetch('/manage/apps', {
+            var res = await fetch('/manage/apps', {
               headers: { 'X-Admin-Secret': secret },
             });
 
             if (res.ok) {
-              const data = await res.json();
+              var data = await res.json();
               document.getElementById('loadError').style.display = 'none';
               renderApps(data || []);
             } else if (res.status === 403) {
@@ -147,34 +210,113 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
               document.getElementById('loadError').style.display = 'block';
             }
           } catch (err) {
-            document.getElementById('loadError').textContent = 'Error: ' + (err instanceof Error ? err.message : 'unknown');
+            document.getElementById('loadError').textContent = 'Error: ' + (err.message || 'unknown');
             document.getElementById('loadError').style.display = 'block';
           }
         }
 
-        function renderApps(apps) {
-          const container = document.getElementById('appsContainer');
-          if (!apps.length) {
-            container.innerHTML = '<div style="text-align:center;color:#666;padding:32px">No apps yet. Create one to get started.</div>';
-            return;
-          }
-          container.innerHTML = apps.map(app => \`
-            <div style="border:1px solid #2a2d3d;border-radius:8px;padding:16px;background:#1a1d27">
-              <div style="font-weight:600;margin-bottom:8px">\${app.app_id}</div>
-              <div style="font-size:12px;color:#666">Sheet: \${app.spreadsheet_id}</div>
-              <div style="font-size:11px;color:#555;margin-top:8px">\${new Date(app.created_at).toLocaleDateString()}</div>
-            </div>
-          \`).join('');
+        // XSS-safe card template. Mirrors AppCard.tsx layout. All
+        // interpolated values are escaped — DO NOT remove the esc() calls.
+        function esc(s) {
+          if (s == null) return '';
+          return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }
+        function renderAppCardHtml(app) {
+          var date = app.created_at ? new Date(app.created_at).toLocaleDateString() : '—';
+          return ''
+            + '<div style="background:#1a1d27;border:1px solid #2a2d3d;border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:12px;">'
+            +   '<div style="display:flex;justify-content:space-between;align-items:center;">'
+            +     '<a href="/ui/apps/' + esc(app.app_id) + '" style="background:rgba(108,99,255,0.15);color:#6c63ff;padding:4px 10px;border-radius:20px;font-size:13px;font-weight:600;font-family:var(--mono);text-decoration:none;">' + esc(app.app_id) + '</a>'
+            +     '<span style="color:#94a3b8;font-size:12px;">' + esc(date) + '</span>'
+            +   '</div>'
+            +   '<p style="font-size:13px;color:#94a3b8;margin:0;">'
+            +     '<span style="color:#64748b;">Sheet ID: </span>'
+            +     '<a href="https://docs.google.com/spreadsheets/d/' + esc(app.spreadsheet_id) + '" target="_blank" rel="noreferrer" style="color:#6c63ff;font-family:var(--mono);font-size:12px;">' + esc(app.spreadsheet_id.slice(0, 20)) + '…</a>'
+            +   '</p>'
+            +   '<div style="margin-top:4px;display:flex;align-items:center;justify-content:space-between;gap:8px;">'
+            +     '<code style="background:#0f1117;color:#94a3b8;padding:4px 8px;border-radius:6px;font-size:12px;">/api/' + esc(app.app_id) + '/:table</code>'
+            +     '<a href="/ui/apps/' + esc(app.app_id) + '" style="color:#6c63ff;font-size:13px;font-weight:600;text-decoration:none;padding:4px 8px;border-radius:6px;background:rgba(108,99,255,0.1);">Open →</a>'
+            +   '</div>'
+            + '</div>';
         }
 
+        function renderApps(apps) {
+          var container = document.getElementById('appsContainer');
+          if (!apps.length) {
+            container.innerHTML = '<div style="text-align:center;color:#666;padding:32px;">No apps yet. Create one to get started.</div>';
+            return;
+          }
+          container.innerHTML = apps.map(renderAppCardHtml).join('');
+        }
+
+        // ── Create app flow ────────────────────────────────────────────
+        async function submitCreateApp() {
+          var input = document.getElementById('createAppInput');
+          var appId = input.value.trim();
+          hideError('createApp');
+          if (!appId) {
+            showError('createApp', 'app_id is required');
+            return;
+          }
+          if (!/^[a-zA-Z0-9_-]+$/.test(appId)) {
+            showError('createApp', 'Only letters, digits, underscores, and dashes');
+            return;
+          }
+
+          var secret = localStorage.getItem('gsdb_admin_secret');
+          if (!secret) { showModal(); return; }
+
+          try {
+            var res = await fetch('/manage/apps', {
+              method: 'POST',
+              headers: { 'X-Admin-Secret': secret, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ app_id: appId }),
+            });
+
+            if (res.status === 201) {
+              var data = await res.json();
+              hideCreateApp();
+              // Populate the key reveal modal via its stable DOM IDs and show it.
+              document.getElementById('createAppKeyTitle').textContent = 'Save your API key for ' + data.app_id;
+              document.getElementById('createAppKeyAppId').textContent = data.app_id;
+              document.getElementById('createAppKeyKey').textContent = data.api_key;
+              showCreateAppKey();
+              input.value = '';
+            } else if (res.status === 409) {
+              showError('createApp', 'app_id already exists');
+            } else if (res.status === 403) {
+              localStorage.removeItem('gsdb_admin_secret');
+              hideCreateApp();
+              showModal();
+            } else {
+              var err = await res.json().catch(function() { return { error: 'Unknown error' }; });
+              showError('createApp', err.error || ('HTTP ' + res.status));
+            }
+          } catch (err) {
+            showError('createApp', err.message || 'Network error');
+          }
+        }
+
+        function doneCreateApp() {
+          hideCreateAppKey();
+          loadApps();
+        }
+
+        // Backwards-compat alias for the existing modal's onclick.
         window.clearAdminSecret = function() {
           localStorage.removeItem('gsdb_admin_secret');
           location.reload();
         };
 
-        const originalFetch = window.fetch;
+        // Shared fetch wrapper: injects X-Admin-Secret for /manage/* calls.
+        var originalFetch = window.fetch;
         window.fetch = function(resource, init) {
-          const secret = localStorage.getItem('gsdb_admin_secret');
+          var secret = localStorage.getItem('gsdb_admin_secret');
           if (secret && typeof resource === 'string' && resource.startsWith('/manage')) {
             init = init || {};
             init.headers = init.headers || {};
@@ -184,7 +326,7 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
         };
 
         function init() {
-          const secret = localStorage.getItem('gsdb_admin_secret');
+          var secret = localStorage.getItem('gsdb_admin_secret');
           if (!secret) {
             showModal();
           } else {
