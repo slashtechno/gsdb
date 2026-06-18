@@ -15,6 +15,10 @@ const rowParams = tableNameParams.extend({
   row: z.coerce.number().int().positive().openapi({ description: '_row index from a GET response', example: 1 }),
 });
 
+const columnParams = tableNameParams.extend({
+  column_name: z.string().min(1).openapi({ example: 'email' }),
+});
+
 // Row object returned by GET (always includes _row)
 const RowSchema = z.record(z.unknown()).and(z.object({ _row: z.number() }));
 
@@ -26,13 +30,7 @@ const tableParams = z.object({
 
 const TableListSchema = z.object({ tables: z.array(z.string()) });
 const TableCreateSchema = z.object({ table: z.string().min(1).openapi({ example: 'new_table' }) });
-
-// Schema operation body — discriminated union keeps OpenAPI clean
-const SchemaOpSchema = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('add'), name: z.string().min(1) }),
-  z.object({ op: z.literal('rename'), from: z.string().min(1), to: z.string().min(1) }),
-  z.object({ op: z.literal('remove'), name: z.string().min(1) }),
-]);
+const ColumnsSchema = z.object({ columns: z.array(z.string()) });
 
 // ── GET /{table_name}/schema ───────────────────────────────────────────────
 // Register /schema BEFORE /{row} so Hono matches the static segment first.
@@ -48,7 +46,7 @@ dataRouter.openapi(
     responses: {
       200: {
         description: 'Column names in order',
-        content: { 'application/json': { schema: z.object({ columns: z.array(z.string()) }) } },
+        content: { 'application/json': { schema: ColumnsSchema } },
       },
       401: { description: 'Unauthorized' },
       403: { description: 'Forbidden' },
@@ -63,12 +61,13 @@ dataRouter.openapi(
 );
 
 // ── PUT /{table_name}/schema ───────────────────────────────────────────────
+// True full-replace: add new columns and delete removed ones (including their data).
 dataRouter.openapi(
   createRoute({
     method: 'put',
     path: '/{table_name}/schema',
     tags: ['Schema'],
-    summary: 'Set (replace) the column headers for a sheet tab. Cannot remove columns — use PATCH op:remove for that. Protects the header row from UI edits.',
+    summary: 'Replace all column headers. Columns present in the current schema but absent from this request are permanently deleted along with all their cell data. New columns are appended with empty values. At least one column required.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -85,10 +84,9 @@ dataRouter.openapi(
     },
     responses: {
       200: {
-        description: 'Headers written',
-        content: { 'application/json': { schema: z.object({ columns: z.array(z.string()) }) } },
+        description: 'Schema replaced',
+        content: { 'application/json': { schema: ColumnsSchema } },
       },
-      400: { description: 'Attempted to remove columns — use PATCH op:remove instead' },
       401: { description: 'Unauthorized' },
       403: { description: 'Forbidden' },
     },
@@ -99,63 +97,132 @@ dataRouter.openapi(
     const spreadsheetId = c.get('spreadsheet_id');
 
     const current = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
-    if (columns.length < current.length) {
-      const removed = current.filter((h) => !columns.includes(h));
-      return c.json(
-        {
-          error:
-            `PUT /schema cannot remove columns — it only rewrites header labels and would ` +
-            `leave the underlying data columns in place, causing header-to-data misalignment. ` +
-            `Remove each column first with PATCH /schema { "op": "remove", "name": "<col>" }. ` +
-            `Columns missing from your request: ${removed.map((c) => `"${c}"`).join(', ')}.`,
-        },
-        400
-      );
+    const toRemove = current.filter((h) => !columns.includes(h));
+    for (const name of toRemove) {
+      await GoogleClient.deleteColumn(c.env, spreadsheetId, table_name, name);
     }
-
     await GoogleClient.setHeaders(c.env, spreadsheetId, table_name, columns);
     return c.json({ columns });
   }
 );
 
-// ── PATCH /{table_name}/schema ─────────────────────────────────────────────
+// ── POST /{table_name}/schema/columns ─────────────────────────────────────
 dataRouter.openapi(
   createRoute({
-    method: 'patch',
-    path: '/{table_name}/schema',
+    method: 'post',
+    path: '/{table_name}/schema/columns',
     tags: ['Schema'],
-    summary: 'Add, rename, or remove a single column. op: "add" | "rename" | "remove".',
+    summary: 'Add a new column to the table. The column is appended after the last existing column with empty values for all existing rows. No existing data is affected.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
       params: tableNameParams,
       body: {
-        content: { 'application/json': { schema: SchemaOpSchema } },
+        content: {
+          'application/json': {
+            schema: z.object({ name: z.string().min(1).openapi({ example: 'phone' }) }),
+          },
+        },
       },
     },
     responses: {
       200: {
-        description: 'Updated column list',
-        content: { 'application/json': { schema: z.object({ columns: z.array(z.string()) }) } },
+        description: 'Column added',
+        content: { 'application/json': { schema: ColumnsSchema } },
       },
-      400: { description: 'Bad request (column not found, name conflict, etc.)' },
+      400: { description: 'Column already exists' },
       401: { description: 'Unauthorized' },
       403: { description: 'Forbidden' },
     },
   }),
   async (c) => {
     const { table_name } = c.req.valid('param');
-    const op = c.req.valid('json');
+    const { name } = c.req.valid('json');
     const spreadsheetId = c.get('spreadsheet_id');
 
     try {
-      if (op.op === 'add') {
-        await GoogleClient.addColumn(c.env, spreadsheetId, table_name, op.name);
-      } else if (op.op === 'rename') {
-        await GoogleClient.renameColumn(c.env, spreadsheetId, table_name, op.from, op.to);
-      } else {
-        await GoogleClient.deleteColumn(c.env, spreadsheetId, table_name, op.name);
-      }
+      await GoogleClient.addColumn(c.env, spreadsheetId, table_name, name);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
+    }
+
+    const columns = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
+    return c.json({ columns });
+  }
+);
+
+// ── PUT /{table_name}/schema/columns/{column_name} ─────────────────────────
+// Rename: PUT replaces the named resource with new state.
+dataRouter.openapi(
+  createRoute({
+    method: 'put',
+    path: '/{table_name}/schema/columns/{column_name}',
+    tags: ['Schema'],
+    summary: 'Rename a column. Only the header label changes — all existing cell data in that column is preserved in place.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: {
+      params: columnParams,
+      body: {
+        content: {
+          'application/json': {
+            schema: z.object({ name: z.string().min(1).openapi({ example: 'email_address' }) }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: 'Column renamed',
+        content: { 'application/json': { schema: ColumnsSchema } },
+      },
+      400: { description: 'Column not found or name conflict' },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { table_name, column_name } = c.req.valid('param');
+    const { name } = c.req.valid('json');
+    const spreadsheetId = c.get('spreadsheet_id');
+
+    try {
+      await GoogleClient.renameColumn(c.env, spreadsheetId, table_name, column_name, name);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
+    }
+
+    const columns = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
+    return c.json({ columns });
+  }
+);
+
+// ── DELETE /{table_name}/schema/columns/{column_name} ─────────────────────
+dataRouter.openapi(
+  createRoute({
+    method: 'delete',
+    path: '/{table_name}/schema/columns/{column_name}',
+    tags: ['Schema'],
+    summary: 'Delete a column and permanently remove all its cell data. Uses a structural column delete (deleteDimension) — the header and its data are removed as one unit, so remaining columns shift left with their data intact (no header-to-data misalignment). Note: any external code referencing columns by letter (A, B, C…) rather than by name will break.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: { params: columnParams },
+    responses: {
+      200: {
+        description: 'Column deleted',
+        content: { 'application/json': { schema: ColumnsSchema } },
+      },
+      400: { description: 'Column not found' },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { table_name, column_name } = c.req.valid('param');
+    const spreadsheetId = c.get('spreadsheet_id');
+
+    try {
+      await GoogleClient.deleteColumn(c.env, spreadsheetId, table_name, column_name);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
     }
@@ -302,8 +369,8 @@ const queryParams = z.object({
 });
 
 const QuerySchema = z.object({
-  sql: z.string().openapi({ 
-    example: "SELECT name, email WHERE role = 'admin'", 
+  sql: z.string().openapi({
+    example: "SELECT name, email WHERE role = 'admin'",
     description: 'GViz SQL query using header names (e.g., "name", "email") — automatically translated to column letters. Supports SELECT, WHERE, ORDER BY, LIMIT, OFFSET.'
   }),
 });
@@ -419,6 +486,131 @@ dataRouter.openapi(
       return c.json({ success: true }, 201);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Failed to append row' }, 500);
+    }
+  }
+);
+
+// ── Field-based row lookup (/by/{field}/{value}) ───────────────────────────
+// These must be registered BEFORE /{row} so Hono matches the static "by" segment first.
+
+const byFieldParams = tableNameParams.extend({
+  field: z.string().min(1).openapi({ example: 'id' }),
+  value: z.string().openapi({ example: 'user_123' }),
+});
+
+// Helper: find rows where row[field] matches value (string comparison).
+function matchRows(
+  rows: { _row: number; [key: string]: unknown }[],
+  field: string,
+  value: string
+): { _row: number; [key: string]: unknown }[] {
+  return rows.filter((r) => String(r[field] ?? '') === value);
+}
+
+dataRouter.openapi(
+  createRoute({
+    method: 'get',
+    path: '/{table_name}/by/{field}/{value}',
+    tags: ['Data'],
+    summary: 'Find all rows where a field equals a value. Returns rows including _row, which can be used for subsequent PATCH or DELETE by row number.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: { params: byFieldParams },
+    responses: {
+      200: {
+        description: 'Matching rows (may be empty)',
+        content: { 'application/json': { schema: z.object({ rows: z.array(RowSchema) }) } },
+      },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { table_name, field, value } = c.req.valid('param');
+    const spreadsheetId = c.get('spreadsheet_id');
+    try {
+      const all = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
+      return c.json({ rows: matchRows(all, field, value) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
+    }
+  }
+);
+
+dataRouter.openapi(
+  createRoute({
+    method: 'patch',
+    path: '/{table_name}/by/{field}/{value}',
+    tags: ['Data'],
+    summary: 'Partially update all rows where a field equals a value. Only supplied fields are changed; others are preserved. Returns the number of rows updated.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: {
+      params: byFieldParams,
+      body: {
+        content: {
+          'application/json': {
+            schema: z.record(z.unknown()).openapi({ example: { status: 'active' } }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: 'Rows updated',
+        content: { 'application/json': { schema: z.object({ updated: z.number() }) } },
+      },
+      400: { description: 'Bad request' },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { table_name, field, value } = c.req.valid('param');
+    const patch = c.req.valid('json');
+    const spreadsheetId = c.get('spreadsheet_id');
+    try {
+      const all = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
+      const matches = matchRows(all, field, value);
+      for (const row of matches) {
+        await GoogleClient.updateRow(c.env, spreadsheetId, table_name, row._row, patch);
+      }
+      return c.json({ updated: matches.length });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
+    }
+  }
+);
+
+dataRouter.openapi(
+  createRoute({
+    method: 'delete',
+    path: '/{table_name}/by/{field}/{value}',
+    tags: ['Data'],
+    summary: 'Delete all rows where a field equals a value. Rows are removed highest-index-first to avoid row-shift affecting later deletes. Returns the number of rows deleted.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: { params: byFieldParams },
+    responses: {
+      200: {
+        description: 'Rows deleted',
+        content: { 'application/json': { schema: z.object({ deleted: z.number() }) } },
+      },
+      400: { description: 'Bad request' },
+      401: { description: 'Unauthorized' },
+      403: { description: 'Forbidden' },
+    },
+  }),
+  async (c) => {
+    const { table_name, field, value } = c.req.valid('param');
+    const spreadsheetId = c.get('spreadsheet_id');
+    try {
+      const all = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
+      const matches = matchRows(all, field, value);
+      await GoogleClient.deleteRows(c.env, spreadsheetId, table_name, matches.map((r) => r._row));
+      return c.json({ deleted: matches.length });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
     }
   }
 );

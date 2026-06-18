@@ -343,6 +343,37 @@ export class GoogleClient {
     if (!res.ok) throw new Error(`Failed to delete row ${row}: ${res.status}`);
   }
 
+  // Deletes multiple rows in one batchUpdate. Requests are sorted highest-index-first so earlier
+  // deletes don't shift the indices of later ones (Sheets processes requests sequentially).
+  static async deleteRows(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    rows: number[]
+  ): Promise<void> {
+    if (rows.length === 0) return;
+    const token = await this.getAccessToken(env);
+    const tabId = await this.fetchTabId(token, spreadsheetId, tab);
+    const sorted = [...rows].sort((a, b) => b - a);
+    const requests = sorted.map((row) => {
+      const sheetRow = row + 1;
+      return {
+        deleteDimension: {
+          range: { sheetId: tabId, dimension: 'ROWS', startIndex: sheetRow - 1, endIndex: sheetRow },
+        },
+      };
+    });
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests }),
+      }
+    );
+    if (!res.ok) throw new Error(`Failed to delete rows: ${res.status}`);
+  }
+
   // Moves a spreadsheet into a Drive folder. Called after createSpreadsheet when GDRIVE_FOLDER_ID is set.
   // Uses the access_token directly so it works with a freshly obtained token before storing it.
   static async moveToFolder(accessToken: string, spreadsheetId: string, folderId: string): Promise<void> {
