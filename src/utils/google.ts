@@ -66,7 +66,7 @@ export class GoogleClient {
 
     const url =
       `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq` +
-      `?sheet=${encodeURIComponent(tab)}&tq=${encodeURIComponent(translatedSql)}`;
+      `?sheet=${encodeURIComponent(tab)}&headers=1&tq=${encodeURIComponent(translatedSql)}`;
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`Sheets query failed: ${res.status}`);
