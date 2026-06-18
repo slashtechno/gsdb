@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { appAuthMiddleware } from '../middleware/auth';
-import { GoogleClient } from '../utils/google';
+import { GoogleClient, RateLimitError } from '../utils/google';
 import type { Env } from '../types';
 
 export const dataRouter = new OpenAPIHono<Env>();
@@ -32,33 +32,69 @@ const tableParams = z.object({
 
 // ── Shared response schemas ────────────────────────────────────────────────
 
-// Row always includes _row so callers can use it for mutations after a read.
+// Row always includes _row so callers can reference it for mutations.
 const RowSchema = z.record(z.unknown()).and(z.object({ _row: z.number() }));
 const ColumnsSchema = z.object({ columns: z.array(z.string()) });
 const TableListSchema = z.object({ tables: z.array(z.string()) });
 
+// Structured error bodies — exposed in OpenAPI so callers can type-check error handling.
+const ErrorSchema = z.object({ error: z.string() });
+const RateLimitSchema = z.object({
+  error: z.string(),
+  retryAfter: z.number().nullable().openapi({ description: 'Seconds to wait before retrying, if provided by Google.' }),
+});
+
+// ── Route helpers ──────────────────────────────────────────────────────────
+
+// NOTE: middleware and security must stay inline in createRoute() — spreading a
+// pre-built object loses the tuple type that @hono/zod-openapi needs for inference.
+const AUTH_ERRORS = {
+  401: { description: 'Unauthorized' },
+  403: { description: 'Forbidden' },
+} as const;
+
+// Wraps a schema in the OpenAPI JSON content envelope.
+const jsonContent = <T extends z.ZodType>(schema: T, description: string) => ({
+  description,
+  content: { 'application/json': { schema } } as const,
+});
+
+// Catches thrown errors. RateLimitError → 429 with retryAfter. All others → 400.
+const tryOrError = async <T>(
+  c: { json: (body: unknown, status?: number) => Response },
+  fn: () => Promise<T>
+): Promise<T | Response> => {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof RateLimitError) {
+      return c.json({ error: err.message, retryAfter: err.retryAfter }, 429) as Response;
+    }
+    return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400) as Response;
+  }
+};
+
+// Standard error responses shared across all routes.
+const COMMON_ERRORS = {
+  429: jsonContent(RateLimitSchema, 'Google Sheets API rate limit exceeded. Back off and retry, using retryAfter seconds if present.'),
+  ...AUTH_ERRORS,
+} as const;
+
 // ── Schema endpoints ───────────────────────────────────────────────────────
-// Register all /schema routes before /{row} so Hono matches the static segment first.
+// Registered before /{row} so Hono matches the static "schema" segment first.
 
 dataRouter.openapi(
   createRoute({
-    method: 'get',
-    path: '/{table_name}/schema',
-    tags: ['Schema'],
-    summary: 'List column headers in order.',
+    method: 'get', path: '/{table_name}/schema',
+    tags: ['Schema'], summary: 'List column headers in order.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: tableNameParams },
-    responses: {
-      200: { description: 'Column names', content: { 'application/json': { schema: ColumnsSchema } } },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
-    },
+    responses: { 200: jsonContent(ColumnsSchema, 'Column names'), ...COMMON_ERRORS },
   }),
   async (c) => {
     const { table_name } = c.req.valid('param');
-    const spreadsheetId = c.get('spreadsheet_id');
-    const columns = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
+    const columns = await GoogleClient.getHeaders(c.env, c.get('spreadsheet_id'), table_name);
     return c.json({ columns });
   }
 );
@@ -66,8 +102,7 @@ dataRouter.openapi(
 // True full-replace: columns absent from the request are deleted along with their data.
 dataRouter.openapi(
   createRoute({
-    method: 'put',
-    path: '/{table_name}/schema',
+    method: 'put', path: '/{table_name}/schema',
     tags: ['Schema'],
     summary: 'Replace all column headers. Columns absent from this request are permanently deleted along with all their cell data. New columns are appended with empty values.',
     middleware: [appAuthMiddleware] as const,
@@ -84,11 +119,7 @@ dataRouter.openapi(
         },
       },
     },
-    responses: {
-      200: { description: 'Schema replaced', content: { 'application/json': { schema: ColumnsSchema } } },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
-    },
+    responses: { 200: jsonContent(ColumnsSchema, 'Schema replaced'), ...COMMON_ERRORS },
   }),
   async (c) => {
     const { table_name } = c.req.valid('param');
@@ -103,31 +134,26 @@ dataRouter.openapi(
   }
 );
 
-// POST /{table}/schema/{column} — add a column named by the path segment (no body needed).
+// POST /{table}/schema/{column} — add a column; name comes from the URL, no body needed.
 dataRouter.openapi(
   createRoute({
-    method: 'post',
-    path: '/{table_name}/schema/{column}',
+    method: 'post', path: '/{table_name}/schema/{column}',
     tags: ['Schema'],
-    summary: 'Add a column. Appended after the last existing column with empty values for all existing rows.',
+    summary: 'Add a column. Appended after the last existing column; existing rows get empty values.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: columnParams },
     responses: {
-      200: { description: 'Column added', content: { 'application/json': { schema: ColumnsSchema } } },
-      400: { description: 'Column already exists' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(ColumnsSchema, 'Column added'),
+      400: jsonContent(ErrorSchema, 'Column already exists'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, column } = c.req.valid('param');
     const spreadsheetId = c.get('spreadsheet_id');
-    try {
-      await GoogleClient.addColumn(c.env, spreadsheetId, table_name, column);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
+    const result = await tryOrError(c, () => GoogleClient.addColumn(c.env, spreadsheetId, table_name, column));
+    if (result instanceof Response) return result;
     const columns = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
     return c.json({ columns });
   }
@@ -136,10 +162,9 @@ dataRouter.openapi(
 // PUT /{table}/schema/{column} — rename: replaces the named resource with new state.
 dataRouter.openapi(
   createRoute({
-    method: 'put',
-    path: '/{table_name}/schema/{column}',
+    method: 'put', path: '/{table_name}/schema/{column}',
     tags: ['Schema'],
-    summary: 'Rename a column. Only the header label changes — all existing cell data in that column is preserved in place.',
+    summary: 'Rename a column. Only the header label changes — all cell data in that column is preserved.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -153,21 +178,17 @@ dataRouter.openapi(
       },
     },
     responses: {
-      200: { description: 'Column renamed', content: { 'application/json': { schema: ColumnsSchema } } },
-      400: { description: 'Column not found or name conflict' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(ColumnsSchema, 'Column renamed'),
+      400: jsonContent(ErrorSchema, 'Column not found or name conflict'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, column } = c.req.valid('param');
     const { name } = c.req.valid('json');
     const spreadsheetId = c.get('spreadsheet_id');
-    try {
-      await GoogleClient.renameColumn(c.env, spreadsheetId, table_name, column, name);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
+    const result = await tryOrError(c, () => GoogleClient.renameColumn(c.env, spreadsheetId, table_name, column, name));
+    if (result instanceof Response) return result;
     const columns = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
     return c.json({ columns });
   }
@@ -175,28 +196,23 @@ dataRouter.openapi(
 
 dataRouter.openapi(
   createRoute({
-    method: 'delete',
-    path: '/{table_name}/schema/{column}',
+    method: 'delete', path: '/{table_name}/schema/{column}',
     tags: ['Schema'],
-    summary: 'Delete a column and permanently remove all its cell data. The header and its data are removed as one unit (deleteDimension), so remaining columns shift left with their data intact — no header-to-data misalignment.',
+    summary: 'Delete a column and all its cell data. Uses deleteDimension — the header and data are removed as one unit, so remaining columns shift left with their data intact (no header-to-data misalignment).',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: columnParams },
     responses: {
-      200: { description: 'Column deleted', content: { 'application/json': { schema: ColumnsSchema } } },
-      400: { description: 'Column not found' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(ColumnsSchema, 'Column deleted'),
+      400: jsonContent(ErrorSchema, 'Column not found'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, column } = c.req.valid('param');
     const spreadsheetId = c.get('spreadsheet_id');
-    try {
-      await GoogleClient.deleteColumn(c.env, spreadsheetId, table_name, column);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
+    const result = await tryOrError(c, () => GoogleClient.deleteColumn(c.env, spreadsheetId, table_name, column));
+    if (result instanceof Response) return result;
     const columns = await GoogleClient.getHeaders(c.env, spreadsheetId, table_name);
     return c.json({ columns });
   }
@@ -206,23 +222,16 @@ dataRouter.openapi(
 
 dataRouter.openapi(
   createRoute({
-    method: 'get',
-    path: '/tables',
-    tags: ['Tables'],
-    summary: 'List all tables (tabs).',
+    method: 'get', path: '/tables',
+    tags: ['Tables'], summary: 'List all tables (tabs).',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: z.object({ app_id: z.string() }) },
-    responses: {
-      200: { description: 'Table names', content: { 'application/json': { schema: TableListSchema } } },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
-    },
+    responses: { 200: jsonContent(TableListSchema, 'Table names'), ...COMMON_ERRORS },
   }),
   async (c) => {
     try {
-      const spreadsheetId = c.get('spreadsheet_id');
-      const tables = await GoogleClient.listTabs(c.env, spreadsheetId);
+      const tables = await GoogleClient.listTabs(c.env, c.get('spreadsheet_id'));
       return c.json({ tables });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Failed to list tables' }, 500);
@@ -232,10 +241,8 @@ dataRouter.openapi(
 
 dataRouter.openapi(
   createRoute({
-    method: 'post',
-    path: '/tables',
-    tags: ['Tables'],
-    summary: 'Create a table (tab) with no headers. Use PUT /{table}/schema to set columns.',
+    method: 'post', path: '/tables',
+    tags: ['Tables'], summary: 'Create a table with no headers. Use PUT /{table}/schema to set columns.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -249,13 +256,9 @@ dataRouter.openapi(
       },
     },
     responses: {
-      201: {
-        description: 'Table created',
-        content: { 'application/json': { schema: z.object({ table: z.string() }) } },
-      },
-      400: { description: 'Table already exists' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      201: jsonContent(z.object({ table: z.string() }), 'Table created'),
+      400: jsonContent(ErrorSchema, 'Table already exists'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
@@ -274,19 +277,16 @@ dataRouter.openapi(
 
 dataRouter.openapi(
   createRoute({
-    method: 'delete',
-    path: '/tables/{table}',
-    tags: ['Tables'],
-    summary: 'Delete a table and all its data. Cannot delete the last remaining table.',
+    method: 'delete', path: '/tables/{table}',
+    tags: ['Tables'], summary: 'Delete a table and all its data. Cannot delete the last remaining table.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: tableParams },
     responses: {
-      200: { description: 'Table deleted', content: { 'application/json': { schema: z.object({ success: z.boolean() }) } } },
-      400: { description: 'Cannot delete the last table' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(z.object({ success: z.boolean() }), 'Table deleted'),
+      400: jsonContent(ErrorSchema, 'Cannot delete the last table'),
       404: { description: 'Table not found' },
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
@@ -308,12 +308,12 @@ dataRouter.openapi(
 
 // GViz SQL validation — GViz is read-only by design, but block obvious misuse.
 function validateSql(sql: string): string | null {
-  const lower = sql.toLowerCase();
+  const lower = sql.toLowerCase().trim();
   const blocked = ['drop', 'delete', 'insert', 'update', 'create', 'alter', 'grant', 'revoke', 'exec', 'execute'];
   for (const word of blocked) {
     if (lower.includes(word)) return `${word.toUpperCase()} is not allowed in GViz SQL`;
   }
-  if (!lower.trim().startsWith('select') && lower.trim() !== '') {
+  if (lower !== '' && !lower.startsWith('select')) {
     return 'Only SELECT queries are allowed (or omit sql for all rows)';
   }
   return null;
@@ -322,10 +322,9 @@ function validateSql(sql: string): string | null {
 // GET /{table} — all rows. Optional ?sql= runs a GViz query instead (no _row in results).
 dataRouter.openapi(
   createRoute({
-    method: 'get',
-    path: '/{table_name}',
+    method: 'get', path: '/{table_name}',
     tags: ['Data'],
-    summary: 'Read rows. Without ?sql, returns all rows including _row (needed for mutations). With ?sql=<GViz SELECT>, runs a server-side query — results do not include _row.',
+    summary: 'Read rows. Without ?sql returns all rows including _row (needed for mutations). With ?sql=<GViz SELECT> runs a server-side query — results do not include _row.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -333,18 +332,21 @@ dataRouter.openapi(
       query: z.object({
         sql: z.string().optional().openapi({
           example: "SELECT name, email WHERE role = 'admin'",
-          description: 'GViz SQL query. Supports SELECT, WHERE, ORDER BY, LIMIT, OFFSET. Omit for all rows.',
+          description: 'GViz SQL. Supports SELECT, WHERE, ORDER BY, LIMIT, OFFSET. Omit for all rows.',
         }),
       }),
     },
     responses: {
       200: {
-        description: 'Rows. Without sql: array with _row. With sql: { rows: [...] } without _row.',
-        content: { 'application/json': { schema: z.union([z.array(RowSchema), z.object({ rows: z.array(z.record(z.unknown())) })]) } },
+        description: 'Without sql: row array with _row. With sql: { rows: [...] } without _row.',
+        content: {
+          'application/json': {
+            schema: z.union([z.array(RowSchema), z.object({ rows: z.array(z.record(z.unknown())) })]),
+          },
+        },
       },
-      400: { description: 'Invalid SQL' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      400: jsonContent(ErrorSchema, 'Invalid SQL'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
@@ -355,12 +357,10 @@ dataRouter.openapi(
     if (sql !== undefined) {
       const err = validateSql(sql);
       if (err) return c.json({ error: err }, 400);
-      try {
+      return await tryOrError(c, async () => {
         const rows = await GoogleClient.query(c.env, spreadsheetId, table_name, sql);
         return c.json({ rows });
-      } catch (err) {
-        return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-      }
+      }) as Response;
     }
 
     try {
@@ -374,10 +374,8 @@ dataRouter.openapi(
 
 dataRouter.openapi(
   createRoute({
-    method: 'post',
-    path: '/{table_name}',
-    tags: ['Data'],
-    summary: 'Append a row. Values are mapped to column headers by key name (order-independent).',
+    method: 'post', path: '/{table_name}',
+    tags: ['Data'], summary: 'Append a row. Values mapped to column headers by key name (order-independent).',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -391,17 +389,15 @@ dataRouter.openapi(
       },
     },
     responses: {
-      201: { description: 'Row appended', content: { 'application/json': { schema: z.object({ success: z.boolean() }) } } },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      201: jsonContent(z.object({ success: z.boolean() }), 'Row appended'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     try {
       const { table_name } = c.req.valid('param');
-      const body = c.req.valid('json');
       const spreadsheetId = c.get('spreadsheet_id');
-      await GoogleClient.appendRow(c.env, spreadsheetId, table_name, body);
+      await GoogleClient.appendRow(c.env, spreadsheetId, table_name, c.req.valid('json'));
       return c.json({ success: true }, 201);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Failed to append row' }, 500);
@@ -422,37 +418,29 @@ function matchRows(
 
 dataRouter.openapi(
   createRoute({
-    method: 'get',
-    path: '/{table_name}/by/{field}/{value}',
-    tags: ['Data'],
-    summary: 'Find all rows where a field equals a value. Returns rows including _row for follow-up mutations.',
+    method: 'get', path: '/{table_name}/by/{field}/{value}',
+    tags: ['Data'], summary: 'Find all rows where a field equals a value. Returns rows including _row for follow-up mutations.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: byFieldParams },
     responses: {
-      200: { description: 'Matching rows (may be empty)', content: { 'application/json': { schema: z.object({ rows: z.array(RowSchema) }) } } },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(z.object({ rows: z.array(RowSchema) }), 'Matching rows (may be empty)'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, field, value } = c.req.valid('param');
-    const spreadsheetId = c.get('spreadsheet_id');
-    try {
-      const all = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
+    return await tryOrError(c, async () => {
+      const all = await GoogleClient.getRows(c.env, c.get('spreadsheet_id'), table_name);
       return c.json({ rows: matchRows(all, field, value) });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
+    }) as Response;
   }
 );
 
 dataRouter.openapi(
   createRoute({
-    method: 'patch',
-    path: '/{table_name}/by/{field}/{value}',
-    tags: ['Data'],
-    summary: 'Partially update all rows where a field equals a value. Only supplied fields change; others are preserved.',
+    method: 'patch', path: '/{table_name}/by/{field}/{value}',
+    tags: ['Data'], summary: 'Partially update all rows where a field equals a value. Only supplied fields change; others are preserved.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -466,56 +454,48 @@ dataRouter.openapi(
       },
     },
     responses: {
-      200: { description: 'Rows updated', content: { 'application/json': { schema: z.object({ updated: z.number() }) } } },
-      400: { description: 'Bad request' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(z.object({ updated: z.number() }), 'Rows updated'),
+      400: jsonContent(ErrorSchema, 'Bad request'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, field, value } = c.req.valid('param');
     const patch = c.req.valid('json');
     const spreadsheetId = c.get('spreadsheet_id');
-    try {
+    return await tryOrError(c, async () => {
       const all = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
       const matches = matchRows(all, field, value);
       for (const row of matches) {
         await GoogleClient.updateRow(c.env, spreadsheetId, table_name, row._row, patch);
       }
       return c.json({ updated: matches.length });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
+    }) as Response;
   }
 );
 
 dataRouter.openapi(
   createRoute({
-    method: 'delete',
-    path: '/{table_name}/by/{field}/{value}',
-    tags: ['Data'],
-    summary: 'Delete all rows where a field equals a value. Rows are deleted highest-index-first to avoid row-shift corrupting later deletes.',
+    method: 'delete', path: '/{table_name}/by/{field}/{value}',
+    tags: ['Data'], summary: 'Delete all rows where a field equals a value. Deleted highest-index-first to avoid row-shift corrupting later deletes.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: byFieldParams },
     responses: {
-      200: { description: 'Rows deleted', content: { 'application/json': { schema: z.object({ deleted: z.number() }) } } },
-      400: { description: 'Bad request' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(z.object({ deleted: z.number() }), 'Rows deleted'),
+      400: jsonContent(ErrorSchema, 'Bad request'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, field, value } = c.req.valid('param');
     const spreadsheetId = c.get('spreadsheet_id');
-    try {
+    return await tryOrError(c, async () => {
       const all = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
       const matches = matchRows(all, field, value);
       await GoogleClient.deleteRows(c.env, spreadsheetId, table_name, matches.map((r) => r._row));
       return c.json({ deleted: matches.length });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
+    }) as Response;
   }
 );
 
@@ -523,10 +503,8 @@ dataRouter.openapi(
 
 dataRouter.openapi(
   createRoute({
-    method: 'patch',
-    path: '/{table_name}/{row}',
-    tags: ['Data'],
-    summary: 'Partially update a row by _row number. Only supplied fields change; others are preserved.',
+    method: 'patch', path: '/{table_name}/{row}',
+    tags: ['Data'], summary: 'Partially update a row by _row number. Only supplied fields change; others are preserved.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: {
@@ -540,49 +518,38 @@ dataRouter.openapi(
       },
     },
     responses: {
-      200: { description: 'Row updated', content: { 'application/json': { schema: z.object({ success: z.boolean() }) } } },
-      400: { description: 'Bad request' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(z.object({ success: z.boolean() }), 'Row updated'),
+      400: jsonContent(ErrorSchema, 'Bad request'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, row } = c.req.valid('param');
-    const patch = c.req.valid('json');
-    const spreadsheetId = c.get('spreadsheet_id');
-    try {
-      await GoogleClient.updateRow(c.env, spreadsheetId, table_name, row, patch);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
-    return c.json({ success: true });
+    return await tryOrError(c, async () => {
+      await GoogleClient.updateRow(c.env, c.get('spreadsheet_id'), table_name, row, c.req.valid('json'));
+      return c.json({ success: true });
+    }) as Response;
   }
 );
 
 dataRouter.openapi(
   createRoute({
-    method: 'delete',
-    path: '/{table_name}/{row}',
-    tags: ['Data'],
-    summary: 'Delete a row by _row number. Subsequent rows shift up — row numbers change after this.',
+    method: 'delete', path: '/{table_name}/{row}',
+    tags: ['Data'], summary: 'Delete a row by _row number. Subsequent rows shift up — _row values change after this.',
     middleware: [appAuthMiddleware] as const,
     security: [{ ApiKeyAuth: [] }],
     request: { params: rowParams },
     responses: {
-      200: { description: 'Row deleted', content: { 'application/json': { schema: z.object({ success: z.boolean() }) } } },
-      400: { description: 'Bad request' },
-      401: { description: 'Unauthorized' },
-      403: { description: 'Forbidden' },
+      200: jsonContent(z.object({ success: z.boolean() }), 'Row deleted'),
+      400: jsonContent(ErrorSchema, 'Bad request'),
+      ...COMMON_ERRORS,
     },
   }),
   async (c) => {
     const { table_name, row } = c.req.valid('param');
-    const spreadsheetId = c.get('spreadsheet_id');
-    try {
-      await GoogleClient.deleteRow(c.env, spreadsheetId, table_name, row);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400);
-    }
-    return c.json({ success: true });
+    return await tryOrError(c, async () => {
+      await GoogleClient.deleteRow(c.env, c.get('spreadsheet_id'), table_name, row);
+      return c.json({ success: true });
+    }) as Response;
   }
 );

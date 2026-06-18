@@ -9,6 +9,26 @@ interface TokenResponse { access_token: string; error?: string; }
 // Sheets API raw values response
 interface SheetValuesResponse { values?: string[][]; }
 
+// Thrown when the Sheets API returns 429. Callers should surface this as a 429
+// to their own clients and pass through retryAfter when present.
+export class RateLimitError extends Error {
+  readonly retryAfter: number | null;
+  constructor(retryAfter: number | null) {
+    super('Google Sheets API rate limit exceeded');
+    this.name = 'RateLimitError';
+    this.retryAfter = retryAfter;
+  }
+}
+
+// Checks a Sheets API response for 429 and throws RateLimitError before the
+// caller tries to parse a JSON body that won't match their expected shape.
+function assertNotRateLimited(res: globalThis.Response): void {
+  if (res.status === 429) {
+    const retryAfter = res.headers.get('Retry-After');
+    throw new RateLimitError(retryAfter ? Number(retryAfter) : null);
+  }
+}
+
 const MASTER_TAB = 'Apps';
 const MASTER_HEADERS = ['app_id', 'spreadsheet_id', 'api_key_hash', 'created_at'];
 
@@ -69,6 +89,7 @@ export class GoogleClient {
       `?sheet=${encodeURIComponent(tab)}&headers=1&tq=${encodeURIComponent(translatedSql)}`;
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Sheets query failed: ${res.status}`);
 
     const text = await res.text();
@@ -104,6 +125,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values }),
     });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
   }
 
@@ -131,6 +153,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values: [row] }),
     });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
   }
 
@@ -146,10 +169,9 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    assertNotRateLimited(res);
     if (!res.ok) {
-      if (res.status === 400) {
-        throw new Error(`Tab "${tab}" not found`);
-      }
+      if (res.status === 400) throw new Error(`Tab "${tab}" not found`);
       throw new Error(`Sheets read failed: ${res.status}`);
     }
 
@@ -172,6 +194,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to list tabs: ${res.status}`);
     const data = (await res.json()) as { sheets: { properties: { title: string } }[] };
     return data.sheets.map((s) => s.properties.title);
@@ -197,6 +220,7 @@ export class GoogleClient {
         }),
       }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to delete tab: ${res.status}`);
   }
 
@@ -271,6 +295,7 @@ export class GoogleClient {
         }),
       }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to delete column: ${res.status}`);
   }
 
@@ -311,6 +336,7 @@ export class GoogleClient {
         body: JSON.stringify({ range: writeRange, values: [headers.map((h) => record[h] ?? null)] }),
       }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to update row ${row}: ${res.status}`);
   }
 
@@ -340,6 +366,7 @@ export class GoogleClient {
         }),
       }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to delete row ${row}: ${res.status}`);
   }
 
@@ -371,6 +398,7 @@ export class GoogleClient {
         body: JSON.stringify({ requests }),
       }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to delete rows: ${res.status}`);
   }
 
@@ -394,6 +422,7 @@ export class GoogleClient {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to move spreadsheet to folder: ${res.status}`);
   }
 
@@ -403,6 +432,7 @@ export class GoogleClient {
       `https://www.googleapis.com/drive/v3/files/${spreadsheetId}`,
       { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to delete spreadsheet: ${res.status}`);
   }
 
@@ -416,6 +446,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to create spreadsheet: ${res.status}`);
     const data = (await res.json()) as { spreadsheetId: string };
     return data.spreadsheetId;
@@ -430,6 +461,7 @@ export class GoogleClient {
       `/values/${MASTER_TAB}`;
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to read Master Sheet: ${res.status}`);
 
     const data = (await res.json()) as SheetValuesResponse;
@@ -467,6 +499,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values: appendRows }),
     });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to append to Master Sheet: ${res.status}`);
   }
 
@@ -493,6 +526,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ range: MASTER_TAB, values }),
     });
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to rewrite Master Sheet: ${res.status}`);
   }
 
@@ -516,6 +550,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to get spreadsheet metadata: ${res.status}`);
     const data = (await res.json()) as { sheets: { properties: { title: string; sheetId: number } }[] };
     if (data.sheets.some((s) => s.properties.title === tab)) return;
@@ -541,6 +576,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to get spreadsheet metadata: ${res.status}`);
     const data = (await res.json()) as { sheets: { properties: { title: string; sheetId: number } }[] };
     const sheet = data.sheets.find((s) => s.properties.title === tab);
@@ -554,6 +590,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}!1:1`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to read headers: ${res.status}`);
     const data = (await res.json()) as SheetValuesResponse;
     return data.values?.[0]?.map(String) ?? [];
@@ -582,6 +619,7 @@ export class GoogleClient {
         body: JSON.stringify({ range, values: [headers] }),
       }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to write headers: ${res.status}`);
   }
 
@@ -607,6 +645,7 @@ export class GoogleClient {
         }),
       }
     );
+    assertNotRateLimited(res);
     if (!res.ok) throw new Error(`Failed to protect header row: ${res.status}`);
   }
 }
