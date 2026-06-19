@@ -424,7 +424,7 @@ dataRouter.openapi(
     security: [{ ApiKeyAuth: [] }],
     request: { params: byFieldParams },
     responses: {
-      200: jsonContent(z.object({ rows: z.array(RowSchema) }), 'Matching rows (may be empty)'),
+      200: jsonContent(z.array(RowSchema), 'Matching rows (may be empty)'),
       ...COMMON_ERRORS,
     },
   }),
@@ -432,7 +432,7 @@ dataRouter.openapi(
     const { table_name, field, value } = c.req.valid('param');
     return await tryOrError(c, async () => {
       const all = await GoogleClient.getRows(c.env, c.get('spreadsheet_id'), table_name);
-      return c.json({ rows: matchRows(all, field, value) });
+      return c.json(matchRows(all, field, value));
     }) as Response;
   }
 );
