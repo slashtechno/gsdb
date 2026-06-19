@@ -50,8 +50,15 @@ export class GoogleClient {
       }),
     });
 
+    if (!res.ok) {
+      console.error('getAccessToken failed:', { status: res.status, statusText: res.statusText });
+    }
+
     const data = (await res.json()) as TokenResponse;
-    if (data.error) throw new Error(`Token refresh failed: ${data.error}`);
+    if (data.error) {
+      console.error('getAccessToken error from Google:', { error: data.error });
+      throw new Error(`Token refresh failed: ${data.error}`);
+    }
     return data.access_token;
   }
 
@@ -462,7 +469,10 @@ export class GoogleClient {
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to read Master Sheet: ${res.status}`);
+    if (!res.ok) {
+      console.error('getMasterSheetApps failed:', { status: res.status, url });
+      throw new Error(`Failed to read Master Sheet: ${res.status}`);
+    }
 
     const data = (await res.json()) as SheetValuesResponse;
     const rows = data.values ?? [];

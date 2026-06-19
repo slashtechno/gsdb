@@ -234,6 +234,7 @@ dataRouter.openapi(
       const tables = await GoogleClient.listTabs(c.env, c.get('spreadsheet_id'));
       return c.json({ tables });
     } catch (err) {
+      console.error('listTabs error:', err instanceof Error ? err.message : 'Failed to list tables', { cause: err });
       return c.json({ error: err instanceof Error ? err.message : 'Failed to list tables' }, 500);
     }
   }
@@ -270,6 +271,7 @@ dataRouter.openapi(
       await GoogleClient.createTab(c.env, spreadsheetId, table);
       return c.json({ table }, 201);
     } catch (err) {
+      console.error('createTab error:', err instanceof Error ? err.message : 'Failed to create table', { cause: err });
       return c.json({ error: err instanceof Error ? err.message : 'Failed to create table' }, 500);
     }
   }
@@ -299,6 +301,7 @@ dataRouter.openapi(
       await GoogleClient.deleteTab(c.env, spreadsheetId, table);
       return c.json({ success: true });
     } catch (err) {
+      console.error('deleteTab error:', err instanceof Error ? err.message : 'Failed to delete table', { cause: err });
       return c.json({ error: err instanceof Error ? err.message : 'Failed to delete table' }, 500);
     }
   }
@@ -367,6 +370,7 @@ dataRouter.openapi(
       const rows = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
       return c.json(rows);
     } catch (err) {
+      console.error('getRows error:', { table: table_name, message: err instanceof Error ? err.message : 'Failed to read rows', cause: err });
       return c.json({ error: err instanceof Error ? err.message : 'Failed to read rows' }, 500);
     }
   }
@@ -400,6 +404,7 @@ dataRouter.openapi(
       await GoogleClient.appendRow(c.env, spreadsheetId, table_name, c.req.valid('json'));
       return c.json({ success: true }, 201);
     } catch (err) {
+      console.error('appendRow error:', { table: table_name, message: err instanceof Error ? err.message : 'Failed to append row', cause: err });
       return c.json({ error: err instanceof Error ? err.message : 'Failed to append row' }, 500);
     }
   }
