@@ -185,7 +185,10 @@ filesRouter.put('/files/*', appAuthMiddleware, async (c) => {
 // ── POST /files/{key}/presign — direct upload URL (bypasses Vercel) ────────
 // Returns a short-lived S3 PUT pre-signed URL. The client uploads directly
 // to S3 — no file bytes pass through Vercel, saving egress bandwidth.
-filesRouter.post('/files/*/presign', appAuthMiddleware, async (c) => {
+// Registered as /files/* catch-all (like the other slash-key routes) because
+// mid-path wildcards behave inconsistently across Hono router implementations.
+filesRouter.post('/files/*', appAuthMiddleware, async (c) => {
+  if (!c.req.path.endsWith('/presign')) return c.notFound();
   if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
   const key = extractKey(c.req.path.replace(/\/presign$/, ''));
   if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
