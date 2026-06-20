@@ -30,7 +30,7 @@ src/
   auth/        OAuth login + callback
   kv/          In-process cache (Map)
   middleware/  appAuthMiddleware + adminAuthMiddleware
-  routes/      data.ts (GViz queries), files.ts (R2), manage.ts (CRUD)
+  routes/      data.ts (GViz queries), files.ts (S3-compatible storage), manage.ts (CRUD)
   ui/          Server-rendered JSX dashboard
   utils/       GoogleClient (all Sheets API calls) + crypto helpers
 platform/
@@ -121,6 +121,10 @@ curl -X POST https://your-domain/api/my-app/Sheet1 \
   -H "Content-Type: application/json" \
   -d '{ "name": "Alice", "email": "alice@example.com" }'
 ```
+
+### File storage (optional)
+
+Set `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (and optionally `S3_REGION`, `S3_ENDPOINT`) to enable `/api/{app_id}/files/*` routes. Works with AWS S3, Cloudflare R2, Backblaze B2, and MinIO. See `/docs` for the full API.
 
 ### OpenAPI schema
 

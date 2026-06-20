@@ -58,6 +58,7 @@ The entire stack is meant to be **run and deployed without CLI tools or extra in
 - Supports AWS S3, Cloudflare R2, Backblaze B2, MinIO (all via `S3_ENDPOINT` override)
 - If `S3_BUCKET` is not set, `/files/*` routes return 501
 - Pre-signed URLs are sync (`s3.presign()`) — no async await overhead
+- **S3 key structure:** `{app_id}/{user-supplied-key}` — e.g. `myapp/receipts/jan.png`. Filter by prefix in S3 console or `aws s3 ls s3://bucket/myapp/` to see a specific app's files. Cross-app access is blocked by key validation in `src/routes/files.ts`.
 
 ### Deployment & Runtime
 

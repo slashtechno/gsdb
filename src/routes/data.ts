@@ -398,8 +398,8 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
+    const { table_name } = c.req.valid('param');
     try {
-      const { table_name } = c.req.valid('param');
       const spreadsheetId = c.get('spreadsheet_id');
       await GoogleClient.appendRow(c.env, spreadsheetId, table_name, c.req.valid('json'));
       return c.json({ success: true }, 201);

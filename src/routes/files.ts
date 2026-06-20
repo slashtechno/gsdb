@@ -150,3 +150,70 @@ filesRouter.openapi(deleteRoute, async (c) => {
   await getS3(c.env).delete(`${appId}/${key}`);
   return c.json({ success: true });
 });
+
+// ── Wildcard routes for keys that contain slashes ──────────────────────────
+// Hono's named params don't capture '/', so /files/{key} won't match
+// keys like "folder/subfolder/file.png". These plain routes catch those cases.
+// The key is everything after /files/ in the path.
+function extractKey(path: string): string {
+  const match = path.match(/\/files\/(.+)$/);
+  return match?.[1] ?? '';
+}
+
+// Reject keys with path traversal sequences or null bytes.
+// S3 keys are scoped to `${appId}/` — a crafted key like `../../other/file`
+// would escape that prefix and allow cross-tenant access.
+function validateKey(key: string): boolean {
+  const segments = key.split('/');
+  return segments.every((s) => s !== '' && s !== '.' && s !== '..' && !s.includes('\0') && !s.includes('\\'));
+}
+
+filesRouter.put('/files/*', appAuthMiddleware, async (c) => {
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  const key = extractKey(c.req.path);
+  if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
+  const appId = c.get('app_id');
+  const s3Key = `${appId}/${key}`;
+  const contentType = c.req.header('Content-Type') ?? 'application/octet-stream';
+  const s3 = getS3(c.env);
+  await s3.write(s3Key, new Uint8Array(await c.req.arrayBuffer()), { type: contentType });
+  const url = s3.presign(s3Key, { method: 'GET', expiresIn: 3600 });
+  return c.json({ key: s3Key, url, expires_in: 3600 });
+});
+
+// ── GET /files/{key}/upload-url — pre-signed direct upload URL ────────────
+// ── POST /files/{key}/presign — direct upload URL (bypasses Vercel) ────────
+// Returns a short-lived S3 PUT pre-signed URL. The client uploads directly
+// to S3 — no file bytes pass through Vercel, saving egress bandwidth.
+filesRouter.post('/files/*/presign', appAuthMiddleware, async (c) => {
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  const key = extractKey(c.req.path.replace(/\/presign$/, ''));
+  if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
+  const appId = c.get('app_id');
+  const s3Key = `${appId}/${key}`;
+  const s3 = getS3(c.env);
+  const url = s3.presign(s3Key, { method: 'PUT', expiresIn: 900 });
+  return c.json({ url, key: s3Key, expires_in: 900 });
+});
+
+filesRouter.get('/files/*', appAuthMiddleware, async (c) => {
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  const key = extractKey(c.req.path);
+  if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
+  const appId = c.get('app_id');
+  const s3Key = `${appId}/${key}`;
+  const s3 = getS3(c.env);
+  const exists = await s3.file(s3Key).exists();
+  if (!exists) return c.json({ error: 'File not found' }, 404);
+  const url = s3.presign(s3Key, { method: 'GET', expiresIn: 3600 });
+  return c.json({ url, expires_in: 3600 });
+});
+
+filesRouter.delete('/files/*', appAuthMiddleware, async (c) => {
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  const key = extractKey(c.req.path);
+  if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
+  const appId = c.get('app_id');
+  await getS3(c.env).delete(`${appId}/${key}`);
+  return c.json({ success: true });
+});
