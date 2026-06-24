@@ -48,8 +48,10 @@ app.get('/docs', swaggerUI({ url: '/openapi.json' }));
 app.route('/auth', authRouter);
 app.route('/ui', uiRouter);
 app.route('/manage', manageRouter);
-app.route('/api/:app_id', dataRouter);
+// filesRouter must be mounted before dataRouter so that the static /files path
+// takes priority over dataRouter's dynamic /:table_name catch-all.
 app.route('/api/:app_id', filesRouter);
+app.route('/api/:app_id', dataRouter);
 
 // Root redirect
 app.get('/', (c) => c.redirect('/ui'));
