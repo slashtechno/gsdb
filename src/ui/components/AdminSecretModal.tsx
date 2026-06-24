@@ -1,4 +1,5 @@
 import type { FC } from 'hono/jsx';
+import { Button } from './Button';
 
 interface AdminSecretModalProps {
   onSubmit: string; // JavaScript function name to call
@@ -54,22 +55,13 @@ export const AdminSecretModal: FC<AdminSecretModalProps> = ({ onSubmit }) => {
           }}
           onkeypress={`if (event.key === 'Enter') ${onSubmit.replace('()', '')}()`}
         />
-        <button
+        <Button
+          fullWidth
           onclick={onSubmit}
-          style={{
-            width: '100%',
-            padding: '10px',
-            background: 'var(--accent)',
-            color: 'white',
-            border: 'none',
-            borderRadius: '6px',
-            fontSize: '14px',
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
+          style={{ padding: '10px' }}
         >
           Unlock
-        </button>
+        </Button>
         <div id="modalError" style={{
           color: 'var(--danger)',
           fontSize: '13px',

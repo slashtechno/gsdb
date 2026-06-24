@@ -1,5 +1,6 @@
 import type { FC } from 'hono/jsx';
 import { Layout } from '../components/Layout';
+import { Button } from '../components/Button';
 import { AppKeyModal } from '../components/AppKeyModal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PromptDialog } from '../components/PromptDialog';
@@ -33,15 +34,15 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
             </p>
           </div>
           <div style={headerActionsStyle}>
-            <button onclick="openCreateTableModal()" style={primaryBtnStyle}>
+            <Button onclick="openCreateTableModal()">
               + Create Table
-            </button>
-            <button onclick="showRotateApp()" style={secondaryBtnStyle}>
+            </Button>
+            <Button variant="secondary" onclick="showRotateApp()">
               Rotate API Key
-            </button>
-            <button onclick="showDeleteApp()" style={dangerBtnStyle}>
+            </Button>
+            <Button variant="danger" onclick="showDeleteApp()">
               Delete App
-            </button>
+            </Button>
           </div>
         </header>
 
@@ -411,37 +412,6 @@ const taglineStyle = { color: '#94a3b8', fontSize: '14px', marginTop: '8px' };
 const sheetLinkStyle = { color: '#6c63ff', fontSize: '13px' };
 
 const headerActionsStyle = { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' as const };
-
-const primaryBtnStyle = {
-  background: '#6c63ff',
-  color: '#fff',
-  border: 'none',
-  padding: '8px 16px',
-  borderRadius: '6px',
-  fontSize: '13px',
-  fontWeight: 600,
-  cursor: 'pointer',
-};
-
-const secondaryBtnStyle = {
-  background: 'transparent',
-  color: 'var(--muted)',
-  border: '1px solid var(--border)',
-  padding: '8px 16px',
-  borderRadius: '6px',
-  fontSize: '13px',
-  cursor: 'pointer',
-};
-
-const dangerBtnStyle = {
-  background: 'transparent',
-  color: 'var(--danger)',
-  border: '1px solid rgba(239, 68, 68, 0.3)',
-  padding: '8px 16px',
-  borderRadius: '6px',
-  fontSize: '13px',
-  cursor: 'pointer',
-};
 
 const keyBannerStyle = {
   background: 'rgba(108, 99, 255, 0.1)',

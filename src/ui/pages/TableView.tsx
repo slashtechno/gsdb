@@ -1,5 +1,6 @@
 import type { FC } from 'hono/jsx';
 import { Layout } from '../components/Layout';
+import { Button } from '../components/Button';
 import { AppKeyModal } from '../components/AppKeyModal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PromptDialog } from '../components/PromptDialog';
@@ -26,9 +27,9 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           </p>
         </div>
         <div style={headerActionsStyle}>
-          <button id="manageToggle" onclick="toggleManage()" style={primaryBtnStyle}>
+          <Button id="manageToggle" onclick="toggleManage()">
             Manage Schema
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -41,7 +42,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
         <div id="columnsContainer" style={columnsContainerStyle} />
         <div id="manageBar" style={manageBarStyle}>
           <input id="newColumnInput" type="text" placeholder="new_column" style={addColumnInputStyle} />
-          <button onclick="submitAddColumn()" style={primaryBtnStyle}>+ Add</button>
+          <Button onclick="submitAddColumn()">+ Add</Button>
         </div>
         <div id="schemaError" style={errorBannerStyle} />
       </section>
@@ -494,17 +495,6 @@ const endpointStyle = {
 };
 
 const headerActionsStyle = { display: 'flex', alignItems: 'center', gap: '8px' };
-
-const primaryBtnStyle = {
-  background: '#6c63ff',
-  color: '#fff',
-  border: 'none',
-  padding: '8px 16px',
-  borderRadius: '6px',
-  fontSize: '13px',
-  fontWeight: 600,
-  cursor: 'pointer',
-};
 
 const keyBannerStyle = {
   background: 'rgba(108, 99, 255, 0.1)',

@@ -1,5 +1,6 @@
 import type { FC } from 'hono/jsx';
 import { Modal } from './Modal';
+import { Button } from './Button';
 
 // One-time display of an api_key (post-create or post-rotate).
 // The key is interpolated into the modal at server-render time via
@@ -36,7 +37,7 @@ export const KeyRevealModal: FC<KeyRevealModalProps> = ({
       id={id}
       title="Save your API key"
       primaryLabel={doneLabel}
-      primaryOnClick={doneFn ?? `hide${idCap}()`}
+      primaryOnClick={doneFn ? `${doneFn}()` : `hide${idCap}()`}
       footer="This key will not be shown again. Store it in a safe place — you'll need it to call the API for this app."
       width={520}
     >
@@ -61,22 +62,12 @@ export const KeyRevealModal: FC<KeyRevealModalProps> = ({
         >
           {api_key}
         </code>
-        <button
+        <Button
           onclick={`copyKey('${id}Key')`}
-          style={{
-            marginTop: '8px',
-            padding: '6px 14px',
-            background: 'var(--accent)',
-            color: 'white',
-            border: 'none',
-            borderRadius: '6px',
-            fontSize: '13px',
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
+          style={{ marginTop: '8px', padding: '6px 14px', fontSize: '13px' }}
         >
           Copy
-        </button>
+        </Button>
       </div>
     </Modal>
   );

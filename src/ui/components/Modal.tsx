@@ -1,4 +1,5 @@
-import type { FC, JSX, PropsWithChildren } from 'hono/jsx';
+import type { FC, PropsWithChildren } from 'hono/jsx';
+import { Button } from './Button';
 
 // Generic modal primitive. Renders a backdrop + panel pair with id-prefixed
 // DOM ids so multiple modals can coexist without selector collisions
@@ -94,39 +95,24 @@ export const Modal: FC<PropsWithChildren<ModalProps>> = ({
         )}
         <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' as const }}>
           {primaryLabel && primaryOnClick && (
-            <button
+            <Button
+              variant={danger ? 'danger' : 'primary'}
+              fullWidth
               onclick={primaryOnClick}
-              style={{
-                width: '100%',
-                padding: '10px',
-                background: danger ? 'var(--danger)' : 'var(--accent)',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                fontSize: '14px',
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
+              style={{ padding: '10px', fontSize: '14px' }}
             >
               {primaryLabel}
-            </button>
+            </Button>
           )}
           {secondaryLabel && secondaryOnClick && (
-            <button
+            <Button
+              variant="secondary"
+              fullWidth
               onclick={secondaryOnClick}
-              style={{
-                width: '100%',
-                padding: '10px',
-                background: 'transparent',
-                color: 'var(--muted)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                fontSize: '14px',
-                cursor: 'pointer',
-              }}
+              style={{ padding: '10px', fontSize: '14px' }}
             >
               {secondaryLabel}
-            </button>
+            </Button>
           )}
         </div>
         <div

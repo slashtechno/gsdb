@@ -2,7 +2,7 @@ note: I heavily used AI to make this as a proof of concept and to create small D
 
 # gsdb
 
-A serverless REST proxy that turns any Google Sheet into an API endpoint.
+A serverless REST proxy that turns any Google Sheet into an API endpoint. Optionally supports [S3-compatible file storage](#file-storage-optional).
 
 ---
 
@@ -124,7 +124,7 @@ curl -X POST https://your-domain/api/my-app/Sheet1 \
 
 ### File storage (optional)
 
-Set `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (and optionally `S3_REGION`, `S3_ENDPOINT`) to enable `/api/{app_id}/files/*` routes. Works with AWS S3, Cloudflare R2, Backblaze B2, and MinIO. See `/docs` for the full API.
+Set `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (and optionally `S3_REGION`, `S3_ENDPOINT`) to enable `/api/{app_id}/files/*` routes. Tested with [Garage](https://garagehq.deuxfleurs.fr/) but should work with other S3-compatible services. See `/docs` for the full API.
 
 ### OpenAPI schema
 

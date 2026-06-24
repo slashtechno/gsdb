@@ -1,5 +1,6 @@
 import type { FC } from 'hono/jsx';
 import { Layout } from '../components/Layout';
+import { Button } from '../components/Button';
 import { AdminSecretModal } from '../components/AdminSecretModal';
 import { PromptDialog } from '../components/PromptDialog';
 import { KeyRevealModal } from '../components/KeyRevealModal';
@@ -23,9 +24,9 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
             <p style={taglineStyle}>Google Sheets → REST API proxy</p>
           </div>
           <div style={headerActionsStyle}>
-            <button onclick="clearAdminSecret()" style={logoutBtnStyle}>
+            <Button onclick="clearAdminSecret()">
               Logout
-            </button>
+            </Button>
           </div>
         </header>
 
@@ -38,12 +39,12 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
             </p>
             <code style={ctaUrlStyle}>{openApiUrl}</code>
           </div>
-          <button
-            style={copyBtnStyle}
+          <Button
             onclick={`navigator.clipboard.writeText('${openApiUrl}').then(() => this.textContent = '✓ Copied!').catch(() => {}); setTimeout(() => this.textContent = 'Copy OpenAPI Schema URL', 2000);`}
+            style={{ padding: '12px 24px', borderRadius: '10px', fontSize: '14px', fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}
           >
             Copy OpenAPI Schema URL
-          </button>
+          </Button>
         </div>
 
         {/* Quick links */}
@@ -60,9 +61,9 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
         <section>
           <div style={sectionHeaderStyle}>
             <h2 style={sectionTitleStyle}>Registered Apps</h2>
-            <button onclick="openCreateAppModal()" style={createBtnStyle}>
+            <Button onclick="openCreateAppModal()" style={{ marginLeft: 'auto' }}>
               + Create App
-            </button>
+            </Button>
           </div>
           <div id="appsContainer" style={gridStyle} />
           <div id="loadError" style={errorBannerStyle} />
@@ -363,16 +364,6 @@ const taglineStyle = { color: '#94a3b8', fontSize: '14px', marginTop: '4px' };
 
 const headerActionsStyle = { display: 'flex', alignItems: 'center', gap: '12px' };
 
-const logoutBtnStyle = {
-  background: '#6c63ff',
-  color: '#fff',
-  border: 'none',
-  padding: '8px 16px',
-  borderRadius: '6px',
-  fontSize: '13px',
-  cursor: 'pointer',
-};
-
 const ctaBoxStyle = {
   background: '#1a1d27',
   border: '1px solid #2a2d3d',
@@ -398,19 +389,6 @@ const ctaUrlStyle = {
   fontFamily: 'var(--mono)',
 };
 
-const copyBtnStyle = {
-  background: '#6c63ff',
-  color: '#fff',
-  border: 'none',
-  padding: '12px 24px',
-  borderRadius: '10px',
-  fontSize: '14px',
-  fontWeight: '700',
-  cursor: 'pointer',
-  whiteSpace: 'nowrap' as const,
-  flexShrink: 0,
-};
-
 const quickLinksStyle = { display: 'flex', gap: '12px', flexWrap: 'wrap' as const };
 const quickLinkStyle = {
   display: 'flex',
@@ -427,17 +405,6 @@ const quickLinkStyle = {
 
 const sectionHeaderStyle = { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' };
 const sectionTitleStyle = { fontSize: '18px', fontWeight: '700' };
-
-const createBtnStyle = {
-  background: '#6c63ff',
-  color: '#fff',
-  border: 'none',
-  padding: '8px 16px',
-  borderRadius: '6px',
-  fontSize: '13px',
-  cursor: 'pointer',
-  marginLeft: 'auto',
-};
 
 const gridStyle = {
   display: 'grid',
