@@ -6,6 +6,14 @@ import type { Env } from '../types';
 
 export const manageRouter = new OpenAPIHono<Env>();
 
+const ErrorSchema = z.object({ error: z.string() });
+const errJson = (description: string) => ({
+  description,
+  content: { 'application/json': { schema: ErrorSchema } } as const,
+});
+// 403 is middleware-injected; description-only avoids handler return-type mismatch.
+const forbidden = { description: 'Forbidden — invalid or missing admin secret. Body: { error: string }' };
+
 // ── POST /manage/apps ──────────────────────────────────────────────────────
 manageRouter.openapi(
   createRoute({
@@ -35,8 +43,8 @@ manageRouter.openapi(
           },
         },
       },
-      403: { description: 'Forbidden' },
-      409: { description: 'app_id already exists' },
+      403: forbidden,
+      409: errJson('app_id already exists'),
     },
   }),
   async (c) => {
@@ -93,7 +101,7 @@ manageRouter.openapi(
           },
         },
       },
-      403: { description: 'Forbidden' },
+      403: forbidden,
     },
   }),
   async (c) => {
@@ -117,8 +125,8 @@ manageRouter.openapi(
     request: { params: z.object({ app_id: z.string() }) },
     responses: {
       200: { description: 'Deleted', content: { 'application/json': { schema: z.object({ success: z.boolean() }) } } },
-      403: { description: 'Forbidden' },
-      404: { description: 'Not found' },
+      403: forbidden,
+      404: errJson('App not found'),
     },
   }),
   async (c) => {
@@ -150,8 +158,8 @@ manageRouter.openapi(
         description: 'New key — shown only once',
         content: { 'application/json': { schema: z.object({ app_id: z.string(), api_key: z.string() }) } },
       },
-      403: { description: 'Forbidden' },
-      404: { description: 'Not found' },
+      403: forbidden,
+      404: errJson('App not found'),
     },
   }),
   async (c) => {

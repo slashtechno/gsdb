@@ -46,18 +46,18 @@ const RateLimitSchema = z.object({
 
 // ── Route helpers ──────────────────────────────────────────────────────────
 
-// NOTE: middleware and security must stay inline in createRoute() — spreading a
-// pre-built object loses the tuple type that @hono/zod-openapi needs for inference.
-const AUTH_ERRORS = {
-  401: { description: 'Unauthorized' },
-  403: { description: 'Forbidden' },
-} as const;
-
 // Wraps a schema in the OpenAPI JSON content envelope.
 const jsonContent = <T extends z.ZodType>(schema: T, description: string) => ({
   description,
   content: { 'application/json': { schema } } as const,
 });
+
+// Auth errors are injected by middleware before the handler runs, so the handler
+// never returns these directly. Use description-only to avoid handler type mismatch.
+const AUTH_ERRORS = {
+  401: { description: 'Unauthorized — missing or invalid API key. Body: { error: string }' },
+  403: { description: 'Forbidden — key does not belong to this app. Body: { error: string }' },
+} as const;
 
 // Catches thrown errors. RateLimitError → 429 with retryAfter. All others → 400.
 const tryOrError = async <T>(
@@ -407,6 +407,123 @@ dataRouter.openapi(
       console.error('appendRow error:', { table: table_name, message: err instanceof Error ? err.message : 'Failed to append row', cause: err });
       return c.json({ error: err instanceof Error ? err.message : 'Failed to append row' }, 500);
     }
+  }
+);
+
+// ── Batch operations ───────────────────────────────────────────────────────
+
+// POST /{table}/batch — insert many rows in one Sheets API call
+dataRouter.openapi(
+  createRoute({
+    method: 'post', path: '/{table_name}/batch',
+    tags: ['Data'], summary: 'Insert multiple rows in a single API call. All rows are mapped to existing column headers.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: {
+      params: tableNameParams,
+      body: {
+        content: {
+          'application/json': {
+            schema: z.array(z.record(z.unknown())).min(1).openapi({
+              example: [
+                { name: 'Alice', email: 'alice@example.com' },
+                { name: 'Bob', email: 'bob@example.com' },
+              ],
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      201: jsonContent(z.object({ inserted: z.number() }), 'Rows inserted'),
+      ...COMMON_ERRORS,
+    },
+  }),
+  async (c) => {
+    const { table_name } = c.req.valid('param');
+    const rows = c.req.valid('json');
+    return await tryOrError(c, async () => {
+      await GoogleClient.appendRows(c.env, c.get('spreadsheet_id'), table_name, rows);
+      return c.json({ inserted: rows.length }, 201);
+    }) as Response;
+  }
+);
+
+// PATCH /{table}/batch — update many rows in one Sheets API call
+// Each item must include _row (from a prior GET) plus the fields to change.
+dataRouter.openapi(
+  createRoute({
+    method: 'patch', path: '/{table_name}/batch',
+    tags: ['Data'],
+    summary: 'Partially update multiple rows in a single API call. Each item must include _row (from a prior GET). Only supplied fields change; others are preserved.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: {
+      params: tableNameParams,
+      body: {
+        content: {
+          'application/json': {
+            schema: z.array(
+              z.record(z.unknown()).and(z.object({ _row: z.number().int().positive() }))
+            ).min(1).openapi({
+              example: [
+                { _row: 1, status: 'active' },
+                { _row: 3, status: 'inactive', role: 'viewer' },
+              ],
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: jsonContent(z.object({ updated: z.number() }), 'Rows updated'),
+      400: jsonContent(ErrorSchema, 'Bad request'),
+      ...COMMON_ERRORS,
+    },
+  }),
+  async (c) => {
+    const { table_name } = c.req.valid('param');
+    const patches = c.req.valid('json') as Array<{ _row: number } & Record<string, unknown>>;
+    return await tryOrError(c, async () => {
+      await GoogleClient.batchUpdateRows(c.env, c.get('spreadsheet_id'), table_name, patches);
+      return c.json({ updated: patches.length });
+    }) as Response;
+  }
+);
+
+// DELETE /{table}/batch — delete many rows in one batchUpdate call
+dataRouter.openapi(
+  createRoute({
+    method: 'delete', path: '/{table_name}/batch',
+    tags: ['Data'],
+    summary: 'Delete multiple rows in a single API call. Supply _row values from a prior GET. Rows are deleted highest-index-first to avoid index shift errors.',
+    middleware: [appAuthMiddleware] as const,
+    security: [{ ApiKeyAuth: [] }],
+    request: {
+      params: tableNameParams,
+      body: {
+        content: {
+          'application/json': {
+            schema: z.object({
+              rows: z.array(z.number().int().positive()).min(1).openapi({ example: [1, 3, 5] }),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: jsonContent(z.object({ deleted: z.number() }), 'Rows deleted'),
+      400: jsonContent(ErrorSchema, 'Bad request'),
+      ...COMMON_ERRORS,
+    },
+  }),
+  async (c) => {
+    const { table_name } = c.req.valid('param');
+    const { rows } = c.req.valid('json');
+    return await tryOrError(c, async () => {
+      await GoogleClient.deleteRows(c.env, c.get('spreadsheet_id'), table_name, rows);
+      return c.json({ deleted: rows.length });
+    }) as Response;
   }
 );
 

@@ -6,6 +6,20 @@ import type { Env } from '../types';
 
 export const filesRouter = new OpenAPIHono<Env>();
 
+const ErrorSchema = z.object({ error: z.string() });
+const errJson = (description: string) => ({
+  description,
+  content: { 'application/json': { schema: ErrorSchema } } as const,
+});
+
+// 401/403 are middleware-injected (handler never returns them); description-only avoids
+// handler return-type mismatch while still documenting the shape for API consumers.
+const FILE_ERRORS = {
+  401: { description: 'Unauthorized — missing or invalid API key. Body: { error: string }' },
+  403: { description: 'Forbidden — key belongs to a different app. Body: { error: string }' },
+  501: errJson('File storage not configured — set S3_BUCKET and S3_ACCESS_KEY_ID'),
+} as const;
+
 // Build an S3Client from c.env — provider-agnostic via S3_ENDPOINT.
 // Works with AWS S3 (omit endpoint), Cloudflare R2, Backblaze B2, MinIO, etc.
 function getS3(env: Env['Bindings']): S3Client {
@@ -46,14 +60,12 @@ const uploadRoute = createRoute({
         },
       },
     },
-    401: { description: 'Unauthorized' },
-    403: { description: 'Forbidden' },
-    501: { description: 'File storage not configured' },
+    ...FILE_ERRORS,
   },
 });
 
 filesRouter.openapi(uploadRoute, async (c) => {
-  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
 
   const { key } = c.req.valid('param');
   const appId = c.get('app_id');
@@ -91,15 +103,13 @@ const downloadRoute = createRoute({
         'application/json': { schema: z.object({ url: z.string(), expires_in: z.number() }) },
       },
     },
-    404: { description: 'Not found' },
-    401: { description: 'Unauthorized' },
-    403: { description: 'Forbidden' },
-    501: { description: 'File storage not configured' },
+    404: errJson('File not found'),
+    ...FILE_ERRORS,
   },
 });
 
 filesRouter.openapi(downloadRoute, async (c) => {
-  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
 
   const { key } = c.req.valid('param');
   const appId = c.get('app_id');
@@ -135,20 +145,86 @@ const deleteRoute = createRoute({
         'application/json': { schema: z.object({ success: z.boolean() }) },
       },
     },
-    401: { description: 'Unauthorized' },
-    403: { description: 'Forbidden' },
-    501: { description: 'File storage not configured' },
+    ...FILE_ERRORS,
   },
 });
 
 filesRouter.openapi(deleteRoute, async (c) => {
-  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
 
   const { key } = c.req.valid('param');
   const appId = c.get('app_id');
 
   await getS3(c.env).delete(`${appId}/${key}`);
   return c.json({ success: true });
+});
+
+// ── GET /files ─────────────────────────────────────────────────────────────
+const listRoute = createRoute({
+  method: 'get',
+  path: '/files',
+  tags: ['Files'],
+  summary: 'List files owned by this app (up to 1000 per page)',
+  middleware: [appAuthMiddleware] as const,
+  security: [{ ApiKeyAuth: [] }],
+  request: {
+    params: z.object({ app_id: z.string() }),
+    query: z.object({
+      prefix: z.string().optional().openapi({ description: 'Filter by key prefix', example: 'avatars/' }),
+      start_after: z.string().optional().openapi({ description: 'Pagination cursor — last key from previous page' }),
+      max_keys: z.coerce.number().int().min(1).max(1000).default(1000).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'File list',
+      content: {
+        'application/json': {
+          schema: z.object({
+            files: z.array(z.object({
+              key: z.string(),
+              size: z.number().optional(),
+              last_modified: z.string().optional(),
+              etag: z.string().optional(),
+            })),
+            truncated: z.boolean(),
+            next_start_after: z.string().optional(),
+          }),
+        },
+      },
+    },
+    401: { description: 'Unauthorized — missing or invalid API key. Body: { error: string }' },
+    501: errJson('File storage not configured — set S3_BUCKET and S3_ACCESS_KEY_ID'),
+  },
+});
+
+filesRouter.openapi(listRoute, async (c) => {
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
+
+  const appId = c.get('app_id');
+  const { prefix, start_after, max_keys } = c.req.valid('query');
+  const appPrefix = `${appId}/`;
+  const s3Prefix = prefix ? `${appPrefix}${prefix}` : appPrefix;
+
+  const result = await getS3(c.env).list({
+    prefix: s3Prefix,
+    maxKeys: max_keys ?? 1000,
+    startAfter: start_after ? `${appPrefix}${start_after}` : undefined,
+  });
+
+  const files = (result.contents ?? []).map((obj) => ({
+    key: obj.key.slice(appPrefix.length),
+    size: obj.size,
+    last_modified: obj.lastModified,
+    etag: obj.eTag,
+  }));
+
+  const last = files.at(-1);
+  return c.json({
+    files,
+    truncated: result.isTruncated ?? false,
+    next_start_after: result.isTruncated && last ? last.key : undefined,
+  });
 });
 
 // ── Wildcard routes for keys that contain slashes ──────────────────────────
@@ -169,7 +245,7 @@ function validateKey(key: string): boolean {
 }
 
 filesRouter.put('/files/*', appAuthMiddleware, async (c) => {
-  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
   const key = extractKey(c.req.path);
   if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
   const appId = c.get('app_id');
@@ -189,7 +265,7 @@ filesRouter.put('/files/*', appAuthMiddleware, async (c) => {
 // mid-path wildcards behave inconsistently across Hono router implementations.
 filesRouter.post('/files/*', appAuthMiddleware, async (c) => {
   if (!c.req.path.endsWith('/presign')) return c.notFound();
-  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
   const key = extractKey(c.req.path.replace(/\/presign$/, ''));
   if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
   const appId = c.get('app_id');
@@ -200,7 +276,7 @@ filesRouter.post('/files/*', appAuthMiddleware, async (c) => {
 });
 
 filesRouter.get('/files/*', appAuthMiddleware, async (c) => {
-  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
   const key = extractKey(c.req.path);
   if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
   const appId = c.get('app_id');
@@ -213,7 +289,7 @@ filesRouter.get('/files/*', appAuthMiddleware, async (c) => {
 });
 
 filesRouter.delete('/files/*', appAuthMiddleware, async (c) => {
-  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501);
+  if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
   const key = extractKey(c.req.path);
   if (!key || !validateKey(key)) return c.json({ error: 'Invalid key' }, 400);
   const appId = c.get('app_id');

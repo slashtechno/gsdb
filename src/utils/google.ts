@@ -136,6 +136,86 @@ export class GoogleClient {
     if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
   }
 
+  // Appends multiple record rows in a single Sheets API call.
+  // All rows are mapped to the same header order; unknown keys are ignored, missing keys become null.
+  static async appendRows(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    records: Record<string, unknown>[]
+  ): Promise<void> {
+    if (records.length === 0) return;
+    const token = await this.getAccessToken(env);
+    const headers = await this.fetchHeaders(token, spreadsheetId, tab);
+
+    const values = records.map((record) =>
+      headers.length > 0
+        ? headers.map((h) => record[h] !== undefined ? record[h] : null)
+        : Object.values(record)
+    );
+
+    const url =
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/` +
+      `${encodeURIComponent(tab)}:append?valueInputOption=RAW`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values }),
+    });
+    assertNotRateLimited(res);
+    if (!res.ok) throw new Error(`Sheets batch append failed: ${res.status}`);
+  }
+
+  // Updates multiple rows in a single values.batchUpdate call.
+  // patches: array of { _row, ...fields } — _row is 1-indexed data row number.
+  // Reads all current rows once, merges each patch, then writes all in one request.
+  static async batchUpdateRows(
+    env: Env['Bindings'],
+    spreadsheetId: string,
+    tab: string,
+    patches: Array<{ _row: number } & Record<string, unknown>>
+  ): Promise<void> {
+    if (patches.length === 0) return;
+    const token = await this.getAccessToken(env);
+    const headers = await this.fetchHeaders(token, spreadsheetId, tab);
+    const colEnd = this.colLetter(headers.length);
+
+    // Fetch all current rows in one call, build a map from _row → current cell values
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    assertNotRateLimited(readRes);
+    if (!readRes.ok) throw new Error(`Failed to read rows for batch update: ${readRes.status}`);
+    const readData = (await readRes.json()) as SheetValuesResponse;
+    const allRows = readData.values ?? [];
+
+    // Build valueRanges: one entry per patch, merged with existing row data
+    const data = patches.map(({ _row, ...patch }) => {
+      const sheetRow = _row + 1; // +1 for header
+      const current = allRows[_row] ?? []; // allRows[0] is header, allRows[_row] is data row _row
+      const record: Record<string, unknown> = {};
+      headers.forEach((h, i) => { record[h] = current[i] ?? null; });
+      Object.assign(record, patch);
+      return {
+        range: `${tab}!A${sheetRow}:${colEnd}${sheetRow}`,
+        values: [headers.map((h) => record[h] ?? null)],
+      };
+    });
+
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ valueInputOption: 'RAW', data }),
+      }
+    );
+    assertNotRateLimited(res);
+    if (!res.ok) throw new Error(`Sheets batch update failed: ${res.status}`);
+  }
+
   // Appends a single record row to a user tab, mapping values to existing column headers.
   // If the tab has no headers yet, values are inserted in key-insertion order.
   static async appendRow(
