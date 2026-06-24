@@ -1,4 +1,5 @@
 import type { FC } from 'hono/jsx';
+import type { CSSProperties } from 'hono/jsx';
 
 interface AppCardProps {
   app_id: string;
@@ -7,7 +8,7 @@ interface AppCardProps {
 }
 
 export const AppCard: FC<AppCardProps> = ({ app_id, spreadsheet_id, created_at }) => (
-  <div style={cardStyle}>
+  <div class="card-hover" style={cardStyle}>
     <div style={headerStyle}>
       <a href={`/ui/apps/${app_id}`} style={badgeStyle}>
         {app_id}
@@ -34,51 +35,52 @@ export const AppCard: FC<AppCardProps> = ({ app_id, spreadsheet_id, created_at }
   </div>
 );
 
-const cardStyle = {
-  background: '#1a1d27',
-  border: '1px solid #2a2d3d',
-  borderRadius: '12px',
+const cardStyle: CSSProperties = {
+  background: 'var(--surface)',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-lg)',
   padding: '20px',
   display: 'flex',
-  flexDirection: 'column' as const,
+  flexDirection: 'column',
   gap: '12px',
-  transition: 'border-color 0.2s',
 };
-const headerStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
-const badgeStyle = {
+const headerStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+const badgeStyle: CSSProperties = {
   background: 'rgba(108, 99, 255, 0.15)',
-  color: '#6c63ff',
+  color: 'var(--accent)',
   padding: '4px 10px',
   borderRadius: '20px',
   fontSize: '13px',
   fontWeight: '600',
   fontFamily: 'var(--mono)',
   textDecoration: 'none',
+  transition: 'background 0.15s',
 };
-const dateStyle = { color: '#94a3b8', fontSize: '12px' };
-const sheetStyle = { fontSize: '13px', color: '#94a3b8' };
-const labelStyle = { color: '#64748b' };
-const linkStyle = { color: '#6c63ff', fontFamily: 'var(--mono)', fontSize: '12px' };
-const actionsStyle = {
+const dateStyle: CSSProperties = { color: 'var(--muted)', fontSize: '12px' };
+const sheetStyle: CSSProperties = { fontSize: '13px', color: 'var(--muted)' };
+const labelStyle: CSSProperties = { color: '#64748b' };
+const linkStyle: CSSProperties = { color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: '12px' };
+const actionsStyle: CSSProperties = {
   marginTop: '4px',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: '8px',
 };
-const endpointStyle = {
-  background: '#0f1117',
-  color: '#94a3b8',
+const endpointStyle: CSSProperties = {
+  background: 'var(--bg)',
+  color: 'var(--muted)',
   padding: '4px 8px',
   borderRadius: '6px',
   fontSize: '12px',
 };
-const openLinkStyle = {
-  color: '#6c63ff',
+const openLinkStyle: CSSProperties = {
+  color: 'var(--accent)',
   fontSize: '13px',
   fontWeight: 600,
   textDecoration: 'none',
   padding: '4px 8px',
   borderRadius: '6px',
   background: 'rgba(108, 99, 255, 0.1)',
+  transition: 'background 0.15s',
 };

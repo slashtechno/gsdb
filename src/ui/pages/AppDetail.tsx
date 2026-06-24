@@ -6,19 +6,19 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PromptDialog } from '../components/PromptDialog';
 import { KeyRevealModal } from '../components/KeyRevealModal';
 import { jsEmbed } from '../lib/escape';
+import * as styles from '../styles';
 
 interface AppDetailProps {
   app_id: string;
   baseUrl: string;
 }
 
-export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
-  // The spreadsheet URL is server-side too, for the "Open in Google Sheets" link.
+export const AppDetail: FC<AppDetailProps> = ({ app_id, baseUrl }) => {
   return (
     <Layout title={`gsdb — ${app_id}`}>
       <div style={containerStyle}>
         <header style={headerStyle}>
-          <div>
+          <div style={headerLeftStyle}>
             <a href="/ui" style={backLinkStyle}>← All apps</a>
             <h1 style={appIdStyle}>{app_id}</h1>
             <p style={taglineStyle}>
@@ -38,10 +38,10 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
               + Create Table
             </Button>
             <Button variant="secondary" onclick="showRotateApp()">
-              Rotate API Key
+              Rotate Key
             </Button>
             <Button variant="danger" onclick="showDeleteApp()">
-              Delete App
+              Delete
             </Button>
           </div>
         </header>
@@ -49,22 +49,20 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
         <div id="apiKeyBanner" style={keyBannerStyle} />
 
         <section>
-          <div style={sectionHeaderStyle}>
-            <h2 style={sectionTitleStyle}>Tables</h2>
+          <div style={styles.sectionHeaderStyle}>
+            <h2 style={styles.sectionTitleStyle}>Tables</h2>
           </div>
           <div id="tablesContainer" style={gridStyle} />
-          <div id="loadError" style={errorBannerStyle} />
+          <div id="loadError" style={styles.errorBannerStyle} />
         </section>
 
-        <footer style={footerStyle}>
+        <footer style={styles.footerStyle}>
           <a href="/ui">← Back to dashboard</a>
         </footer>
       </div>
 
-      {/* Per-app auth */}
       <AppKeyModal app_id={app_id} />
 
-      {/* Table creation */}
       <PromptDialog
         id="createTable"
         title="Create Table"
@@ -75,7 +73,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
         submitFn="submitCreateTable"
       />
 
-      {/* Destructive confirms */}
       <ConfirmDialog
         id="rotateApp"
         title="Rotate API Key"
@@ -87,30 +84,22 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
       <ConfirmDialog
         id="deleteApp"
         title="Delete App"
-        message={`This permanently removes ${app_id} from the registry. The Google Sheet itself is not deleted — you can re-register the same sheet id later if needed.`}
+        message={`This permanently removes ${app_id} from the registry. The Google Sheet itself is not deleted.`}
         confirmLabel="Delete"
         confirmFn="submitDeleteApp"
         dangerous
       />
 
-      {/* Reveal modal — populated by JS after rotate returns the new key */}
       <KeyRevealModal id="rotateAppKey" app_id={app_id} api_key="" doneFn="hideRotateAppKey" />
 
       <script dangerouslySetInnerHTML={{ __html: `
         var APP_ID = ${jsEmbed(app_id)};
         var KEY_STORAGE = 'gsdb_api_key:' + APP_ID;
 
-        function getAppKey() {
-          return sessionStorage.getItem(KEY_STORAGE);
-        }
-        function setAppKey(k) {
-          sessionStorage.setItem(KEY_STORAGE, k);
-        }
-        function clearAppKey() {
-          sessionStorage.removeItem(KEY_STORAGE);
-        }
+        function getAppKey() { return sessionStorage.getItem(KEY_STORAGE); }
+        function setAppKey(k) { sessionStorage.setItem(KEY_STORAGE, k); }
+        function clearAppKey() { sessionStorage.removeItem(KEY_STORAGE); }
 
-        // Modal helpers
         function showId(id) {
           document.getElementById(id + 'Modal').style.display = 'block';
           document.getElementById(id + 'Backdrop').style.display = 'block';
@@ -138,7 +127,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           document.getElementById('loadError').style.display = 'none';
         }
 
-        // Named wrappers used by inline onclick= attributes
         function showAppKey() { showId('appKey'); }
         function hideAppKey() { hideId('appKey'); }
         function showCreateTable() { showId('createTable'); }
@@ -161,7 +149,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           }).catch(function() {});
         }
 
-        // ── Key entry ────────────────────────────────────────────────
         function submitAppKey() {
           var input = document.getElementById('appKeyInput');
           var key = input.value.trim();
@@ -171,13 +158,9 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           }
           setAppKey(key);
           hideAppKey();
-          // Re-run page init from scratch.
           init();
         }
 
-        // ── Fetch wrapper ────────────────────────────────────────────
-        // For /api/{app_id}/* calls: prefer X-Admin-Secret if the admin is logged in,
-        // otherwise fall back to the per-app Bearer token.
         var originalFetch = window.fetch;
         window.fetch = function(resource, init) {
           if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/')) {
@@ -222,7 +205,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           }
         }
 
-        // ── Tables list ─────────────────────────────────────────────
         function esc(s) {
           if (s == null) return '';
           return String(s)
@@ -236,16 +218,16 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
         function renderTables(tables) {
           var container = document.getElementById('tablesContainer');
           if (!tables.length) {
-            container.innerHTML = '<div style="text-align:center;color:#666;padding:32px;">No tables yet. Create one to get started.</div>';
+            container.innerHTML = '<div style="text-align:center;color:#64748b;padding:48px 24px;font-size:14px;line-height:1.6;">No tables yet. <span style="display:block;margin-top:8px;">Create one to get started.</span></div>';
             return;
           }
-          container.innerHTML = tables.map(function(name) {
+          container.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;animation:fadeIn 0.3s ease-out;">' + tables.map(function(name) {
             return ''
-              + '<a href="/ui/apps/' + esc(APP_ID) + '/' + esc(name) + '" style="background:#1a1d27;border:1px solid #2a2d3d;border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:6px;text-decoration:none;color:inherit;transition:border-color 0.2s;">'
-              +   '<div style="font-size:15px;font-weight:600;font-family:var(--mono);color:#e2e8f0;">' + esc(name) + '</div>'
-              +   '<div style="font-size:12px;color:#64748b;">Open →</div>'
+              + '<a href="/ui/apps/' + esc(APP_ID) + '/' + esc(name) + '" class="card-hover" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;display:flex;flex-direction:column;gap:8px;text-decoration:none;color:inherit;">'
+              +   '<div style="font-size:16px;font-weight:600;font-family:var(--mono);color:var(--text);">' + esc(name) + '</div>'
+              +   '<div style="font-size:12px;color:#64748b;margin-top:4px;">Open →</div>'
               + '</a>';
-          }).join('');
+          }).join('') + '</div>';
         }
 
         async function loadTables() {
@@ -268,7 +250,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           }
         }
 
-        // ── Create table ────────────────────────────────────────────
         async function submitCreateTable() {
           var input = document.getElementById('createTableInput');
           var name = input.value.trim();
@@ -299,7 +280,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           }
         }
 
-        // ── Rotate key ──────────────────────────────────────────────
         async function submitRotateApp() {
           var secret = localStorage.getItem('gsdb_admin_secret');
           if (!secret) {
@@ -314,7 +294,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
             });
             if (res.ok) {
               var data = await res.json();
-              // CRITICAL: write new key BEFORE showing modal so the page keeps working.
               setAppKey(data.api_key);
               hideRotateApp();
               document.getElementById('rotateAppKeyAppId').textContent = data.app_id;
@@ -332,7 +311,6 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
           }
         }
 
-        // ── Delete app ──────────────────────────────────────────────
         async function submitDeleteApp() {
           var secret = localStorage.getItem('gsdb_admin_secret');
           if (!secret) {
@@ -375,9 +353,8 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id }) => {
   );
 };
 
-// ── Styles ────────────────────────────────────────────────────────────────
 const containerStyle = {
-  maxWidth: '900px',
+  maxWidth: '960px',
   margin: '0 auto',
   padding: '40px 24px',
   display: 'flex' as const,
@@ -393,10 +370,18 @@ const headerStyle = {
   flexWrap: 'wrap' as const,
 };
 
+const headerLeftStyle = {
+  display: 'flex',
+  flexDirection: 'column' as const,
+  gap: '4px',
+};
+
 const backLinkStyle = {
   color: 'var(--muted)',
   fontSize: '13px',
   textDecoration: 'none',
+  display: 'inline-block',
+  marginBottom: '4px',
 };
 
 const appIdStyle = {
@@ -404,49 +389,30 @@ const appIdStyle = {
   fontWeight: '800',
   letterSpacing: '-1px',
   fontFamily: 'var(--mono)',
-  margin: '4px 0 0 0',
+  margin: '0',
   color: 'var(--text)',
 };
 
-const taglineStyle = { color: '#94a3b8', fontSize: '14px', marginTop: '8px' };
-const sheetLinkStyle = { color: '#6c63ff', fontSize: '13px' };
+const taglineStyle = { color: 'var(--muted)', fontSize: '14px', marginTop: '4px' };
+const sheetLinkStyle = { color: 'var(--accent)', fontSize: '13px' };
 
-const headerActionsStyle = { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' as const };
+const headerActionsStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  flexWrap: 'wrap' as const,
+};
 
 const keyBannerStyle = {
   background: 'rgba(108, 99, 255, 0.1)',
   border: '1px solid rgba(108, 99, 255, 0.3)',
-  borderRadius: '8px',
+  borderRadius: 'var(--radius)',
   padding: '12px 16px',
   color: '#c4b5fd',
   fontSize: '14px',
   display: 'none',
 };
 
-const sectionHeaderStyle = { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' };
-const sectionTitleStyle = { fontSize: '18px', fontWeight: '700' };
-
 const gridStyle = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-  gap: '16px',
-};
-
-const errorBannerStyle = {
-  background: 'rgba(239, 68, 68, 0.1)',
-  border: '1px solid rgba(239, 68, 68, 0.3)',
-  borderRadius: '8px',
-  padding: '12px 16px',
-  color: '#fca5a5',
-  fontSize: '14px',
-  marginBottom: '16px',
-};
-
-const footerStyle = {
-  display: 'flex',
-  gap: '12px',
-  color: '#475569',
-  fontSize: '13px',
-  paddingTop: '16px',
-  borderTop: '1px solid #1e2132',
+  display: 'block',
 };

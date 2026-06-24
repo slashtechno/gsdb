@@ -5,6 +5,8 @@ import { AppKeyModal } from '../components/AppKeyModal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PromptDialog } from '../components/PromptDialog';
 import { jsEmbed } from '../lib/escape';
+import * as styles from '../styles';
+import { inputStyle } from '../styles';
 
 interface TableViewProps {
   app_id: string;
@@ -36,35 +38,37 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
       <div id="apiKeyBanner" style={keyBannerStyle} />
 
       <section>
-        <div style={sectionHeaderStyle}>
-          <h2 style={sectionTitleStyle}>Columns</h2>
+        <div style={styles.sectionHeaderStyle}>
+          <h2 style={styles.sectionTitleStyle}>Columns</h2>
         </div>
         <div id="columnsContainer" style={columnsContainerStyle} />
         <div id="manageBar" style={manageBarStyle}>
           <input id="newColumnInput" type="text" placeholder="new_column" style={addColumnInputStyle} />
           <Button onclick="submitAddColumn()">+ Add</Button>
         </div>
-        <div id="schemaError" style={errorBannerStyle} />
+        <div id="schemaError" style={styles.errorBannerStyle} />
       </section>
 
       <section>
-        <div style={sectionHeaderStyle}>
-          <h2 style={sectionTitleStyle}>Rows</h2>
-          <span id="rowsMeta" style={mutedStyle}>—</span>
+        <div style={sectionHeaderRowStyle}>
+          <div style={styles.sectionHeaderStyle}>
+            <h2 style={styles.sectionTitleStyle}>Rows</h2>
+            <span id="rowsMeta" style={mutedStyle}>—</span>
+          </div>
         </div>
-        <div id="rowsContainer" style={rowsContainerStyle} />
-        <div id="rowsError" style={errorBannerStyle} />
+        <div id="rowsWrapper" style={rowsWrapperStyle}>
+          <div id="rowsContainer" style={rowsContainerStyle} />
+        </div>
+        <div id="rowsError" style={styles.errorBannerStyle} />
       </section>
 
-      <footer style={footerStyle}>
+      <footer style={styles.footerStyle}>
         <a href={`/ui/apps/${app_id}`}>← Back to {app_id}</a>
       </footer>
     </div>
 
-    {/* Per-app auth */}
     <AppKeyModal app_id={app_id} />
 
-    {/* Add/rename column prompts */}
     <PromptDialog
       id="renameColumn"
       title="Rename Column"
@@ -101,9 +105,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
         var columns = [];
         var renameTarget = null;
 
-        function getAppKey() {
-          return sessionStorage.getItem(KEY_STORAGE);
-        }
+        function getAppKey() { return sessionStorage.getItem(KEY_STORAGE); }
         function setAppKey(k) { sessionStorage.setItem(KEY_STORAGE, k); }
         function clearAppKey() { sessionStorage.removeItem(KEY_STORAGE); }
 
@@ -154,7 +156,6 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           else { el.textContent = text; el.style.display = 'block'; }
         }
 
-        // Fetch wrapper — prefer X-Admin-Secret when admin is logged in.
         var originalFetch = window.fetch;
         window.fetch = function(resource, init) {
           if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/')) {
@@ -181,13 +182,13 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           });
         };
 
-        // ── Manage schema mode ──────────────────────────────────────
+        // ── Manage schema ──────────────────────────────────────────
         function toggleManage() {
           manageMode = !manageMode;
           var btn = document.getElementById('manageToggle');
           var bar = document.getElementById('manageBar');
           btn.textContent = manageMode ? 'Done' : 'Manage Schema';
-          btn.style.background = manageMode ? 'var(--success, #22c55e)' : '#6c63ff';
+          btn.style.background = manageMode ? 'var(--success, #22c55e)' : 'var(--accent)';
           bar.style.display = manageMode ? 'flex' : 'none';
           renderColumns();
         }
@@ -197,27 +198,27 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           container.innerHTML = '';
           if (!columns.length) {
             var empty = document.createElement('div');
-            empty.style.cssText = 'color:#666;padding:24px;text-align:center;';
+            empty.style.cssText = 'color:#64748b;padding:32px;text-align:center;font-size:14px;';
             empty.textContent = 'No columns yet. Use Manage Schema to add one.';
             container.appendChild(empty);
             return;
           }
           columns.forEach(function(name) {
             var chip = document.createElement('div');
-            chip.style.cssText = 'background:rgba(108,99,255,0.15);color:#6c63ff;padding:6px 10px;border-radius:20px;font-size:13px;font-weight:600;font-family:var(--mono);display:inline-flex;align-items:center;gap:8px;';
+            chip.style.cssText = 'background:rgba(108,99,255,0.12);color:var(--accent);padding:6px 12px;border-radius:20px;font-size:13px;font-weight:600;font-family:var(--mono);display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(108,99,255,0.2);transition:border-color 0.15s;';
             var label = document.createElement('span');
             label.textContent = name;
             chip.appendChild(label);
             if (manageMode) {
               var renameBtn = document.createElement('button');
               renameBtn.textContent = 'Rename';
-              renameBtn.style.cssText = 'background:transparent;color:var(--accent);border:1px solid rgba(108,99,255,0.3);padding:2px 8px;border-radius:6px;font-size:11px;cursor:pointer;';
+              renameBtn.style.cssText = 'background:transparent;color:var(--accent);border:1px solid rgba(108,99,255,0.3);padding:2px 8px;border-radius:6px;font-size:11px;cursor:pointer;transition:background 0.15s;';
               renameBtn.onclick = (function(n) { return function() { openRename(n); }; })(name);
               chip.appendChild(renameBtn);
 
               var removeBtn = document.createElement('button');
               removeBtn.textContent = '✕';
-              removeBtn.style.cssText = 'background:transparent;color:var(--danger);border:none;padding:0 4px;font-size:14px;cursor:pointer;font-weight:700;';
+              removeBtn.style.cssText = 'background:transparent;color:var(--danger);border:none;padding:0 6px;font-size:13px;cursor:pointer;font-weight:700;opacity:0.7;transition:opacity 0.15s;';
               removeBtn.title = 'Remove column';
               removeBtn.onclick = (function(n) { return function() { openRemove(n); }; })(name);
               chip.appendChild(removeBtn);
@@ -322,7 +323,6 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
         }
 
         // ── Rows ────────────────────────────────────────────────────
-        // SECURITY: cell values use textContent — never innerHTML.
         function renderRows(rows) {
           var container = document.getElementById('rowsContainer');
           var meta = document.getElementById('rowsMeta');
@@ -330,7 +330,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
 
           if (!rows.length) {
             var empty = document.createElement('div');
-            empty.style.cssText = 'color:#666;padding:24px;text-align:center;';
+            empty.style.cssText = 'color:#64748b;padding:32px;text-align:center;font-size:14px;';
             empty.textContent = 'No rows yet.';
             container.appendChild(empty);
             meta.textContent = '0 rows';
@@ -345,37 +345,38 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
             : total + ' rows';
 
           var table = document.createElement('table');
-          table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;';
+          table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;min-width:400px;';
 
           var thead = document.createElement('thead');
           var headRow = document.createElement('tr');
-          // _row column header
           var thRow = document.createElement('th');
           thRow.textContent = '_row';
-          thRow.style.cssText = 'text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);color:#64748b;font-weight:600;font-size:12px;';
+          thRow.style.cssText = thStyle;
           headRow.appendChild(thRow);
           columns.forEach(function(c) {
             var th = document.createElement('th');
-            th.textContent = c; // textContent — no XSS
-            th.style.cssText = 'text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);color:#64748b;font-weight:600;font-size:12px;';
+            th.textContent = c;
+            th.style.cssText = thStyle;
             headRow.appendChild(th);
           });
           thead.appendChild(headRow);
           table.appendChild(thead);
 
           var tbody = document.createElement('tbody');
-          display.forEach(function(row) {
+          display.forEach(function(row, idx) {
             var tr = document.createElement('tr');
+            tr.style.cssText = 'transition:background 0.1s;';
+            tr.onmouseenter = function() { this.style.background = 'rgba(108,99,255,0.04)'; };
+            tr.onmouseleave = function() { this.style.background = ''; };
             var tdRow = document.createElement('td');
             tdRow.textContent = String(row._row);
-            tdRow.style.cssText = 'padding:8px 12px;border-bottom:1px solid #1e2132;color:#64748b;font-family:var(--mono);font-size:12px;';
+            tdRow.style.cssText = tdStyle + 'color:#64748b;font-family:var(--mono);font-size:12px;';
             tr.appendChild(tdRow);
             columns.forEach(function(c) {
               var td = document.createElement('td');
-              // SECURITY: textContent only — arbitrary user data
               var val = row[c];
               td.textContent = val == null ? '' : String(val);
-              td.style.cssText = 'padding:8px 12px;border-bottom:1px solid #1e2132;color:#e2e8f0;';
+              td.style.cssText = tdStyle;
               tr.appendChild(td);
             });
             tbody.appendChild(tr);
@@ -383,6 +384,9 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           table.appendChild(tbody);
           container.appendChild(table);
         }
+
+        var thStyle = 'text-align:left;padding:10px 14px;border-bottom:2px solid var(--border);color:#64748b;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;background:var(--surface);position:sticky;top:0;z-index:1;';
+        var tdStyle = 'padding:10px 14px;border-bottom:1px solid #1e2132;color:var(--text);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
         // ── Loaders ─────────────────────────────────────────────────
         async function loadSchema() {
@@ -424,7 +428,6 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           await loadRows();
         }
 
-        // ── Key entry ───────────────────────────────────────────────
         function submitAppKey() {
           var input = document.getElementById('appKeyInput');
           var key = input.value.trim();
@@ -451,7 +454,6 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
   </Layout>
 );
 
-// ── Styles ────────────────────────────────────────────────────────────────
 const containerStyle = {
   maxWidth: '1100px',
   margin: '0 auto',
@@ -484,12 +486,12 @@ const tableTitleStyle = {
   color: 'var(--text)',
 };
 
-const taglineStyle = { color: '#94a3b8', fontSize: '14px', marginTop: '8px' };
+const taglineStyle = { color: 'var(--muted)', fontSize: '14px', marginTop: '8px' };
 const endpointStyle = {
-  color: '#94a3b8',
+  color: 'var(--muted)',
   fontFamily: 'var(--mono)',
   fontSize: '12px',
-  background: '#1a1d27',
+  background: 'var(--surface)',
   padding: '4px 8px',
   borderRadius: '6px',
 };
@@ -499,15 +501,21 @@ const headerActionsStyle = { display: 'flex', alignItems: 'center', gap: '8px' }
 const keyBannerStyle = {
   background: 'rgba(108, 99, 255, 0.1)',
   border: '1px solid rgba(108, 99, 255, 0.3)',
-  borderRadius: '8px',
+  borderRadius: 'var(--radius)',
   padding: '12px 16px',
   color: '#c4b5fd',
   fontSize: '14px',
   display: 'none',
 };
 
-const sectionHeaderStyle = { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' };
-const sectionTitleStyle = { fontSize: '18px', fontWeight: '700' };
+const sectionHeaderRowStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: '12px',
+  marginBottom: '12px',
+};
+
 const mutedStyle = { color: '#64748b', fontSize: '13px' };
 
 const columnsContainerStyle = {
@@ -526,40 +534,16 @@ const manageBarStyle = {
 };
 
 const addColumnInputStyle = {
+  ...inputStyle,
   flex: 1,
-  padding: '8px 12px',
+};
+
+const rowsWrapperStyle = {
+  background: 'var(--surface)',
   border: '1px solid var(--border)',
-  borderRadius: '6px',
-  background: 'var(--bg)',
-  color: 'var(--text)',
-  fontSize: '13px',
-  fontFamily: 'var(--mono)',
-  boxSizing: 'border-box' as const,
-};
-
-const rowsContainerStyle = {
-  background: '#1a1d27',
-  border: '1px solid #2a2d3d',
-  borderRadius: '8px',
+  borderRadius: 'var(--radius-lg)',
   overflow: 'auto',
+  WebkitOverflowScrolling: 'touch' as const,
 };
 
-const errorBannerStyle = {
-  background: 'rgba(239, 68, 68, 0.1)',
-  border: '1px solid rgba(239, 68, 68, 0.3)',
-  borderRadius: '8px',
-  padding: '12px 16px',
-  color: '#fca5a5',
-  fontSize: '14px',
-  marginTop: '12px',
-  display: 'none',
-};
-
-const footerStyle = {
-  display: 'flex',
-  gap: '12px',
-  color: '#475569',
-  fontSize: '13px',
-  paddingTop: '16px',
-  borderTop: '1px solid #1e2132',
-};
+const rowsContainerStyle = {};
