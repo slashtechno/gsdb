@@ -269,7 +269,10 @@ export class GoogleClient {
     const headers = rows[0].map(String);
     return rows.slice(1).map((row, i) => {
       const record: { _row: number; [key: string]: unknown } = { _row: i + 1 };
-      headers.forEach((h, j) => { record[h] = row[j] ?? null; });
+      // Sheets omits trailing blank cells per-row, so an unset column reads back as
+      // undefined (nothing after it is populated) or "" (something after it is) depending
+      // on unrelated data in that row. Normalize both to null so "unset" is deterministic.
+      headers.forEach((h, j) => { const v = row[j]; record[h] = v === undefined || v === '' ? null : v; });
       return record;
     });
   }
