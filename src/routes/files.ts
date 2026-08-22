@@ -68,6 +68,7 @@ filesRouter.openapi(uploadRoute, async (c) => {
   if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
 
   const { key } = c.req.valid('param');
+  if (!validateKey(key)) return c.json({ error: 'Invalid key' }, 400) as never;
   const appId = c.get('app_id');
   const s3Key = `${appId}/${key}`;
   const contentType = c.req.header('Content-Type') ?? 'application/octet-stream';
@@ -112,6 +113,7 @@ filesRouter.openapi(downloadRoute, async (c) => {
   if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
 
   const { key } = c.req.valid('param');
+  if (!validateKey(key)) return c.json({ error: 'Invalid key' }, 400) as never;
   const appId = c.get('app_id');
   const s3Key = `${appId}/${key}`;
   const s3 = getS3(c.env);
@@ -153,6 +155,7 @@ filesRouter.openapi(deleteRoute, async (c) => {
   if (!assertS3(c.env)) return c.json({ error: 'File storage not configured' }, 501) as never;
 
   const { key } = c.req.valid('param');
+  if (!validateKey(key)) return c.json({ error: 'Invalid key' }, 400) as never;
   const appId = c.get('app_id');
 
   await getS3(c.env).delete(`${appId}/${key}`);

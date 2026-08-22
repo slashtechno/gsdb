@@ -2,17 +2,32 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { adminAuthMiddleware, invalidateAppsCache, invalidateAppTokens } from '../middleware/auth';
 import { hashApiKey, generateApiKey } from '../utils/crypto';
 import { GoogleClient } from '../utils/google';
+import { tryOrError } from '../utils/errors';
 import type { Env } from '../types';
 
 export const manageRouter = new OpenAPIHono<Env>();
 
 const ErrorSchema = z.object({ error: z.string() });
+const RateLimitSchema = z.object({
+  error: z.string(),
+  retryAfter: z.number().openapi({ description: 'Seconds to wait before retrying.' }),
+});
 const errJson = (description: string) => ({
   description,
   content: { 'application/json': { schema: ErrorSchema } } as const,
 });
 // 403 is middleware-injected; description-only avoids handler return-type mismatch.
 const forbidden = { description: 'Forbidden — invalid or missing admin secret. Body: { error: string }' };
+// Every route here talks to the Master Sheet, so every route can hit Google's rate limit
+// or a transient upstream failure — shared with data.ts's contract so clients handle both
+// surfaces identically.
+const RATE_LIMIT_ERRORS = {
+  429: {
+    description: 'Google Sheets API rate limit exceeded. Back off and retry using the Retry-After header (seconds).',
+    content: { 'application/json': { schema: RateLimitSchema } } as const,
+  },
+  502: errJson('Upstream (Google Sheets/Drive) request failed. Safe to retry with backoff.'),
+} as const;
 
 // ── POST /manage/apps ──────────────────────────────────────────────────────
 manageRouter.openapi(
@@ -45,37 +60,40 @@ manageRouter.openapi(
       },
       403: forbidden,
       409: errJson('app_id already exists'),
+      ...RATE_LIMIT_ERRORS,
     },
   }),
   async (c) => {
     const { app_id } = c.req.valid('json');
 
-    const existing = await GoogleClient.getMasterSheetApps(c.env);
-    if (existing.some((a) => a.app_id === app_id)) {
-      return c.json({ error: 'app_id already exists' }, 409);
-    }
+    return await tryOrError(c, async () => {
+      const existing = await GoogleClient.getMasterSheetApps(c.env);
+      if (existing.some((a) => a.app_id === app_id)) {
+        return c.json({ error: 'app_id already exists' }, 409);
+      }
 
-    // Create a dedicated spreadsheet using the drive.file-scoped token.
-    const accessToken = await GoogleClient.getAccessToken(c.env);
-    const spreadsheet_id = await GoogleClient.createSpreadsheet(accessToken, app_id);
+      // Create a dedicated spreadsheet using the drive.file-scoped token.
+      const accessToken = await GoogleClient.getAccessToken(c.env);
+      const spreadsheet_id = await GoogleClient.createSpreadsheet(accessToken, app_id);
 
-    // Optionally move the new sheet into a specific Drive folder.
-    if (c.env.GDRIVE_FOLDER_ID) {
-      await GoogleClient.moveToFolder(accessToken, spreadsheet_id, c.env.GDRIVE_FOLDER_ID);
-    }
+      // Optionally move the new sheet into a specific Drive folder.
+      if (c.env.GDRIVE_FOLDER_ID) {
+        await GoogleClient.moveToFolder(accessToken, spreadsheet_id, c.env.GDRIVE_FOLDER_ID);
+      }
 
-    const apiKey = generateApiKey();
-    const api_key_hash = await hashApiKey(apiKey);
+      const apiKey = generateApiKey();
+      const api_key_hash = await hashApiKey(apiKey);
 
-    await GoogleClient.appendMasterSheetApp(c.env, {
-      app_id,
-      spreadsheet_id,
-      api_key_hash,
-      created_at: new Date().toISOString(),
-    });
+      await GoogleClient.appendMasterSheetApp(c.env, {
+        app_id,
+        spreadsheet_id,
+        api_key_hash,
+        created_at: new Date().toISOString(),
+      });
 
-    invalidateAppsCache();
-    return c.json({ app_id, api_key: apiKey, spreadsheet_id }, 201);
+      invalidateAppsCache();
+      return c.json({ app_id, api_key: apiKey, spreadsheet_id }, 201);
+    }) as Response;
   }
 );
 
@@ -102,14 +120,17 @@ manageRouter.openapi(
         },
       },
       403: forbidden,
+      ...RATE_LIMIT_ERRORS,
     },
   }),
   async (c) => {
-    const apps = await GoogleClient.getMasterSheetApps(c.env);
-    // Never expose the hash
-    return c.json(apps.map(({ app_id, spreadsheet_id, created_at }) => ({
-      app_id, spreadsheet_id, created_at,
-    })));
+    return await tryOrError(c, async () => {
+      const apps = await GoogleClient.getMasterSheetApps(c.env);
+      // Never expose the hash
+      return c.json(apps.map(({ app_id, spreadsheet_id, created_at }) => ({
+        app_id, spreadsheet_id, created_at,
+      })));
+    }) as Response;
   }
 );
 
@@ -127,19 +148,22 @@ manageRouter.openapi(
       200: { description: 'Deleted', content: { 'application/json': { schema: z.object({ success: z.boolean() }) } } },
       403: forbidden,
       404: errJson('App not found'),
+      ...RATE_LIMIT_ERRORS,
     },
   }),
   async (c) => {
     const { app_id } = c.req.valid('param');
-    const apps = await GoogleClient.getMasterSheetApps(c.env);
-    if (!apps.some((a) => a.app_id === app_id)) {
-      return c.json({ error: 'App not found' }, 404);
-    }
+    return await tryOrError(c, async () => {
+      const apps = await GoogleClient.getMasterSheetApps(c.env);
+      if (!apps.some((a) => a.app_id === app_id)) {
+        return c.json({ error: 'App not found' }, 404);
+      }
 
-    await GoogleClient.rewriteMasterSheetApps(c.env, apps.filter((a) => a.app_id !== app_id));
-    invalidateAppsCache();
-    invalidateAppTokens(app_id);
-    return c.json({ success: true });
+      await GoogleClient.rewriteMasterSheetApps(c.env, apps.filter((a) => a.app_id !== app_id));
+      invalidateAppsCache();
+      invalidateAppTokens(app_id);
+      return c.json({ success: true });
+    }) as Response;
   }
 );
 
@@ -160,20 +184,23 @@ manageRouter.openapi(
       },
       403: forbidden,
       404: errJson('App not found'),
+      ...RATE_LIMIT_ERRORS,
     },
   }),
   async (c) => {
     const { app_id } = c.req.valid('param');
-    const apps = await GoogleClient.getMasterSheetApps(c.env);
-    const idx = apps.findIndex((a) => a.app_id === app_id);
-    if (idx === -1) return c.json({ error: 'App not found' }, 404);
+    return await tryOrError(c, async () => {
+      const apps = await GoogleClient.getMasterSheetApps(c.env);
+      const idx = apps.findIndex((a) => a.app_id === app_id);
+      if (idx === -1) return c.json({ error: 'App not found' }, 404);
 
-    const apiKey = generateApiKey();
-    apps[idx] = { ...apps[idx], api_key_hash: await hashApiKey(apiKey) };
+      const apiKey = generateApiKey();
+      apps[idx] = { ...apps[idx], api_key_hash: await hashApiKey(apiKey) };
 
-    await GoogleClient.rewriteMasterSheetApps(c.env, apps);
-    invalidateAppsCache();
-    invalidateAppTokens(app_id);
-    return c.json({ app_id, api_key: apiKey });
+      await GoogleClient.rewriteMasterSheetApps(c.env, apps);
+      invalidateAppsCache();
+      invalidateAppTokens(app_id);
+      return c.json({ app_id, api_key: apiKey });
+    }) as Response;
   }
 );

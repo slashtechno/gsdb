@@ -1,7 +1,8 @@
 import { createMiddleware } from 'hono/factory';
 import { cache } from '../kv';
-import { hashApiKey } from '../utils/crypto';
+import { hashApiKey, timingSafeEqual } from '../utils/crypto';
 import { GoogleClient } from '../utils/google';
+import { errorResponse } from '../utils/errors';
 import type { Env, AppRecord } from '../types';
 
 // Apps are cached for 5 minutes. All app records are loaded at once
@@ -74,7 +75,7 @@ export const appAuthMiddleware = createMiddleware<Env>(async (c, next) => {
       if (!app) return c.json({ error: 'Invalid API key or app_id' }, 403);
 
       const keyHash = await hashApiKey(apiKey);
-      if (app.api_key_hash !== keyHash) return c.json({ error: 'Invalid API key or app_id' }, 403);
+      if (!timingSafeEqual(app.api_key_hash, keyHash)) return c.json({ error: 'Invalid API key or app_id' }, 403);
 
       spreadsheetId = app.spreadsheet_id;
       cache.set(tokenCacheKey, spreadsheetId, CACHE_TTL);
@@ -85,7 +86,7 @@ export const appAuthMiddleware = createMiddleware<Env>(async (c, next) => {
     await next();
   } catch (err) {
     console.error('appAuthMiddleware error:', { appId: c.req.param('app_id'), message: err instanceof Error ? err.message : 'Unknown error', cause: err });
-    return c.json({ error: err instanceof Error ? err.message : 'Internal server error' }, 500);
+    return errorResponse(c, err);
   }
 });
 

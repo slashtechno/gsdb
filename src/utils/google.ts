@@ -20,6 +20,19 @@ export class RateLimitError extends Error {
   }
 }
 
+// Thrown for any non-429 failure response from Sheets/Drive. Distinct from RateLimitError
+// (retry after a delay) and from a plain business-logic Error like "column not found"
+// (client's mistake, not retryable) — callers need to tell these apart without parsing
+// message strings so they can decide whether to retry against Google or fail the request.
+export class UpstreamError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'UpstreamError';
+    this.status = status;
+  }
+}
+
 // Checks a Sheets API response for 429 and throws RateLimitError before the
 // caller tries to parse a JSON body that won't match their expected shape.
 function assertNotRateLimited(res: globalThis.Response): void {
@@ -27,6 +40,13 @@ function assertNotRateLimited(res: globalThis.Response): void {
     const retryAfter = res.headers.get('Retry-After');
     throw new RateLimitError(retryAfter ? Number(retryAfter) : null);
   }
+}
+
+// Checks a Sheets/Drive response for 429 (-> RateLimitError) or any other non-ok
+// status (-> UpstreamError, carrying the upstream status for callers that care).
+function assertOk(res: globalThis.Response, message: string): void {
+  assertNotRateLimited(res);
+  if (!res.ok) throw new UpstreamError(`${message}: ${res.status}`, res.status);
 }
 
 const MASTER_TAB = 'Apps';
@@ -81,14 +101,22 @@ export class GoogleClient {
       throw new Error('Table has no headers');
     }
 
-    // Translate header names to column letters in the SQL
+    // Translate header names to column letters in the SQL. Done in two passes via
+    // placeholder tokens: substituting header -> column letter directly in one pass
+    // (as before) could have an earlier substitution's output (e.g. header "B" -> "A")
+    // re-matched and re-substituted by a later header's regex (header "A" -> "B"),
+    // corrupting which column a query term refers to when headers are themselves named
+    // after column letters. Placeholders can't collide with header names or SQL syntax.
     let translatedSql = sql;
-    for (let i = 0; i < headers.length; i++) {
-      const header = headers[i];
-      const colLetter = this.colLetter(i + 1);
-      // Replace header name (case-insensitive, word boundary) with column letter
+    const placeholders: [string, string][] = [];
+    headers.forEach((header, i) => {
+      const token = ` COL${i} `;
       const regex = new RegExp(`\\b${header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-      translatedSql = translatedSql.replace(regex, colLetter);
+      translatedSql = translatedSql.replace(regex, token);
+      placeholders.push([token, this.colLetter(i + 1)]);
+    });
+    for (const [token, colLetter] of placeholders) {
+      translatedSql = translatedSql.split(token).join(colLetter);
     }
 
     const url =
@@ -96,8 +124,7 @@ export class GoogleClient {
       `?sheet=${encodeURIComponent(tab)}&headers=1&tq=${encodeURIComponent(translatedSql)}`;
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Sheets query failed: ${res.status}`);
+    assertOk(res, 'Sheets query failed');
 
     const text = await res.text();
     const json = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
@@ -132,8 +159,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values }),
     });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
+    assertOk(res, 'Sheets append failed');
   }
 
   // Appends multiple record rows in a single Sheets API call.
@@ -163,8 +189,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values }),
     });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Sheets batch append failed: ${res.status}`);
+    assertOk(res, 'Sheets batch append failed');
   }
 
   // Updates multiple rows in a single values.batchUpdate call.
@@ -186,8 +211,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    assertNotRateLimited(readRes);
-    if (!readRes.ok) throw new Error(`Failed to read rows for batch update: ${readRes.status}`);
+    assertOk(readRes, 'Failed to read rows for batch update');
     const readData = (await readRes.json()) as SheetValuesResponse;
     const allRows = readData.values ?? [];
 
@@ -195,8 +219,7 @@ export class GoogleClient {
     const data = patches.map(({ _row, ...patch }) => {
       const sheetRow = _row + 1; // +1 for header
       const current = allRows[_row] ?? []; // allRows[0] is header, allRows[_row] is data row _row
-      const record: Record<string, unknown> = {};
-      headers.forEach((h, i) => { record[h] = current[i] ?? null; });
+      const record = this.rowArrayToRecord(headers, current);
       Object.assign(record, patch);
       return {
         range: `${tab}!A${sheetRow}:${colEnd}${sheetRow}`,
@@ -212,8 +235,7 @@ export class GoogleClient {
         body: JSON.stringify({ valueInputOption: 'RAW', data }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Sheets batch update failed: ${res.status}`);
+    assertOk(res, 'Sheets batch update failed');
   }
 
   // Appends a single record row to a user tab, mapping values to existing column headers.
@@ -240,8 +262,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values: [row] }),
     });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
+    assertOk(res, 'Sheets append failed');
   }
 
   // Reads all data rows from a tab via the values API. Returns named objects with a _row field
@@ -259,7 +280,7 @@ export class GoogleClient {
     assertNotRateLimited(res);
     if (!res.ok) {
       if (res.status === 400) throw new Error(`Tab "${tab}" not found`);
-      throw new Error(`Sheets read failed: ${res.status}`);
+      throw new UpstreamError(`Sheets read failed: ${res.status}`, res.status);
     }
 
     const data = (await res.json()) as SheetValuesResponse;
@@ -268,12 +289,7 @@ export class GoogleClient {
 
     const headers = rows[0].map(String);
     return rows.slice(1).map((row, i) => {
-      const record: { _row: number; [key: string]: unknown } = { _row: i + 1 };
-      // Sheets omits trailing blank cells per-row, so an unset column reads back as
-      // undefined (nothing after it is populated) or "" (something after it is) depending
-      // on unrelated data in that row. Normalize both to null so "unset" is deterministic.
-      headers.forEach((h, j) => { const v = row[j]; record[h] = v === undefined || v === '' ? null : v; });
-      return record;
+      return { _row: i + 1, ...this.rowArrayToRecord(headers, row) };
     });
   }
 
@@ -284,8 +300,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to list tabs: ${res.status}`);
+    assertOk(res, 'Failed to list tabs');
     const data = (await res.json()) as { sheets: { properties: { title: string } }[] };
     return data.sheets.map((s) => s.properties.title);
   }
@@ -310,8 +325,7 @@ export class GoogleClient {
         }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to delete tab: ${res.status}`);
+    assertOk(res, 'Failed to delete tab');
   }
 
   // Returns the header row (row 1) of a tab.
@@ -385,8 +399,7 @@ export class GoogleClient {
         }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to delete column: ${res.status}`);
+    assertOk(res, 'Failed to delete column');
   }
 
   // Updates a specific data row (patch semantics — only supplied fields are changed).
@@ -408,13 +421,12 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}!A${sheetRow}:${colEnd}${sheetRow}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!readRes.ok) throw new Error(`Failed to read row ${row}: ${readRes.status}`);
+    assertOk(readRes, `Failed to read row ${row}`);
     const readData = (await readRes.json()) as SheetValuesResponse;
     const current = readData.values?.[0] ?? [];
 
     // Build merged record
-    const record: Record<string, unknown> = {};
-    headers.forEach((h, i) => { record[h] = current[i] ?? null; });
+    const record = this.rowArrayToRecord(headers, current);
     Object.assign(record, patch);
 
     const writeRange = `${tab}!A${sheetRow}`;
@@ -426,8 +438,7 @@ export class GoogleClient {
         body: JSON.stringify({ range: writeRange, values: [headers.map((h) => record[h] ?? null)] }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to update row ${row}: ${res.status}`);
+    assertOk(res, `Failed to update row ${row}`);
   }
 
   // Deletes a specific data row, shifting subsequent rows up.
@@ -456,8 +467,7 @@ export class GoogleClient {
         }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to delete row ${row}: ${res.status}`);
+    assertOk(res, `Failed to delete row ${row}`);
   }
 
   // Deletes multiple rows in one batchUpdate. Requests are sorted highest-index-first so earlier
@@ -488,8 +498,7 @@ export class GoogleClient {
         body: JSON.stringify({ requests }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to delete rows: ${res.status}`);
+    assertOk(res, 'Failed to delete rows');
   }
 
   // Moves a spreadsheet into a Drive folder. Called after createSpreadsheet when GDRIVE_FOLDER_ID is set.
@@ -500,6 +509,7 @@ export class GoogleClient {
       `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=parents`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
+    assertOk(metaRes, 'Failed to get spreadsheet parents');
     const meta = (await metaRes.json()) as { parents?: string[] };
     const removeParents = (meta.parents ?? []).join(',');
 
@@ -512,8 +522,7 @@ export class GoogleClient {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to move spreadsheet to folder: ${res.status}`);
+    assertOk(res, 'Failed to move spreadsheet to folder');
   }
 
   // Deletes a Google Spreadsheet from Drive.
@@ -522,8 +531,7 @@ export class GoogleClient {
       `https://www.googleapis.com/drive/v3/files/${spreadsheetId}`,
       { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to delete spreadsheet: ${res.status}`);
+    assertOk(res, 'Failed to delete spreadsheet');
   }
 
   // Creates a new Google Spreadsheet and returns its spreadsheetId.
@@ -536,8 +544,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to create spreadsheet: ${res.status}`);
+    assertOk(res, 'Failed to create spreadsheet');
     const data = (await res.json()) as { spreadsheetId: string };
     return data.spreadsheetId;
   }
@@ -554,7 +561,7 @@ export class GoogleClient {
     assertNotRateLimited(res);
     if (!res.ok) {
       console.error('getMasterSheetApps failed:', { status: res.status, url });
-      throw new Error(`Failed to read Master Sheet: ${res.status}`);
+      throw new UpstreamError(`Failed to read Master Sheet: ${res.status}`, res.status);
     }
 
     const data = (await res.json()) as SheetValuesResponse;
@@ -576,6 +583,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${env.MASTER_SHEET_ID}` +
       `/values/${MASTER_TAB}!A1`;
     const checkRes = await fetch(checkUrl, { headers: { Authorization: `Bearer ${token}` } });
+    assertOk(checkRes, 'Failed to check Master Sheet headers');
     const checkData = (await checkRes.json()) as SheetValuesResponse;
 
     const needsHeaders = !checkData.values?.length;
@@ -592,8 +600,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values: appendRows }),
     });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to append to Master Sheet: ${res.status}`);
+    assertOk(res, 'Failed to append to Master Sheet');
   }
 
   static async rewriteMasterSheetApps(env: Env['Bindings'], apps: AppRecord[]): Promise<void> {
@@ -602,10 +609,14 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${env.MASTER_SHEET_ID}` +
       `/values/${MASTER_TAB}`;
 
-    await fetch(`${baseUrl}:clear`, {
+    const clearRes = await fetch(`${baseUrl}:clear`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
+    // Must not proceed on a failed clear: a partial rewrite over stale rows (e.g. after a
+    // delete or key rotation shrinks the app list) would leave old rows — and old api_key
+    // hashes — beyond the new row count still readable from the Master Sheet.
+    assertOk(clearRes, 'Failed to clear Master Sheet before rewrite');
 
     if (apps.length === 0) return;
 
@@ -619,8 +630,7 @@ export class GoogleClient {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ range: MASTER_TAB, values }),
     });
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to rewrite Master Sheet: ${res.status}`);
+    assertOk(res, 'Failed to rewrite Master Sheet');
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────
@@ -636,6 +646,20 @@ export class GoogleClient {
     return s;
   }
 
+  // Maps a raw Sheets values-API row array to a header-keyed record. Sheets omits
+  // trailing blank cells per-row, so an unset column reads back as undefined (nothing
+  // after it in that row is populated) or "" (something after it is) depending on
+  // unrelated data in that row. Normalize both to null so "unset" is deterministic
+  // regardless of which shape the raw row happened to take.
+  private static rowArrayToRecord(headers: string[], row: unknown[]): Record<string, unknown> {
+    const record: Record<string, unknown> = {};
+    headers.forEach((h, j) => {
+      const v = row[j];
+      record[h] = v === undefined || v === '' ? null : v;
+    });
+    return record;
+  }
+
   // Creates a tab in the spreadsheet if it does not already exist.
   // If the spreadsheet still has Google's default "Sheet1" placeholder, removes it in the same request.
   private static async ensureTab(token: string, spreadsheetId: string, tab: string): Promise<void> {
@@ -643,8 +667,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to get spreadsheet metadata: ${res.status}`);
+    assertOk(res, 'Failed to get spreadsheet metadata');
     const data = (await res.json()) as { sheets: { properties: { title: string; sheetId: number } }[] };
     if (data.sheets.some((s) => s.properties.title === tab)) return;
 
@@ -660,7 +683,7 @@ export class GoogleClient {
         body: JSON.stringify({ requests }),
       }
     );
-    if (!addRes.ok) throw new Error(`Failed to create tab "${tab}": ${addRes.status}`);
+    assertOk(addRes, `Failed to create tab "${tab}"`);
   }
 
   // Returns the numeric sheetId for a named tab (required by batchUpdate operations).
@@ -669,8 +692,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to get spreadsheet metadata: ${res.status}`);
+    assertOk(res, 'Failed to get spreadsheet metadata');
     const data = (await res.json()) as { sheets: { properties: { title: string; sheetId: number } }[] };
     const sheet = data.sheets.find((s) => s.properties.title === tab);
     if (!sheet) throw new Error(`Tab "${tab}" not found`);
@@ -683,8 +705,7 @@ export class GoogleClient {
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(tab)}!1:1`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to read headers: ${res.status}`);
+    assertOk(res, 'Failed to read headers');
     const data = (await res.json()) as SheetValuesResponse;
     return data.values?.[0]?.map(String) ?? [];
   }
@@ -712,8 +733,7 @@ export class GoogleClient {
         body: JSON.stringify({ range, values: [headers] }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to write headers: ${res.status}`);
+    assertOk(res, 'Failed to write headers');
   }
 
   // Adds a warningOnly protected range over row 1 to discourage accidental UI edits.
@@ -738,7 +758,6 @@ export class GoogleClient {
         }),
       }
     );
-    assertNotRateLimited(res);
-    if (!res.ok) throw new Error(`Failed to protect header row: ${res.status}`);
+    assertOk(res, 'Failed to protect header row');
   }
 }

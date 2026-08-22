@@ -7,12 +7,20 @@ import { filesRouter } from './routes/files';
 import { manageRouter } from './routes/manage';
 import { authRouter } from './auth/index';
 import { uiRouter } from './routes/ui';
+import { errorResponse } from './utils/errors';
 import type { Env } from './types';
 
 const app = new OpenAPIHono<Env>();
 
 app.use('*', logger());
-app.use('*', cors());
+// Retry-After isn't CORS-safelisted by default — without exposeHeaders, a browser-based
+// consumer can see a 429 happened but can't read how long to back off for.
+app.use('*', cors({ exposeHeaders: ['Retry-After'] }));
+
+// Safety net: formats anything a route or middleware forgot to catch (RateLimitError,
+// UpstreamError, or a plain Error) the same way tryOrError does, so no path ever falls
+// through to Hono's bare-text default 500.
+app.onError((err, c) => errorResponse(c, err));
 
 // Register security schemes in OpenAPI components
 app.openAPIRegistry.registerComponent('securitySchemes', 'ApiKeyAuth', {
@@ -48,10 +56,14 @@ app.get('/docs', swaggerUI({ url: '/openapi.json' }));
 app.route('/auth', authRouter);
 app.route('/ui', uiRouter);
 app.route('/manage', manageRouter);
-// filesRouter must be mounted before dataRouter so that the static /files path
-// takes priority over dataRouter's dynamic /:table_name catch-all.
-app.route('/api/:app_id', filesRouter);
-app.route('/api/:app_id', dataRouter);
+
+// Canonical, frozen surface: apps target /api/v1/*. Once shipped, routes here only change
+// in backward-compatible ways (new optional fields, new endpoints) — a breaking change
+// ships as /api/v2 instead of altering this path.
+// filesRouter must be mounted before dataRouter so that the static /files path takes
+// priority over dataRouter's dynamic /:table_name catch-all.
+app.route('/api/v1/:app_id', filesRouter);
+app.route('/api/v1/:app_id', dataRouter);
 
 // Root redirect
 app.get('/', (c) => c.redirect('/ui'));

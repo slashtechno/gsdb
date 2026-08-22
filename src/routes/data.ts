@@ -1,6 +1,7 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { appAuthMiddleware } from '../middleware/auth';
-import { GoogleClient, RateLimitError } from '../utils/google';
+import { GoogleClient } from '../utils/google';
+import { tryOrError } from '../utils/errors';
 import type { Env } from '../types';
 
 export const dataRouter = new OpenAPIHono<Env>();
@@ -59,24 +60,10 @@ const AUTH_ERRORS = {
   403: { description: 'Forbidden — key does not belong to this app. Body: { error: string }' },
 } as const;
 
-// Catches thrown errors. RateLimitError → 429 with retryAfter. All others → 400.
-const tryOrError = async <T>(
-  c: { json: (body: unknown, status?: number) => Response },
-  fn: () => Promise<T>
-): Promise<T | Response> => {
-  try {
-    return await fn();
-  } catch (err) {
-    if (err instanceof RateLimitError) {
-      return c.json({ error: err.message, retryAfter: err.retryAfter }, 429) as Response;
-    }
-    return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 400) as Response;
-  }
-};
-
 // Standard error responses shared across all routes.
 const COMMON_ERRORS = {
-  429: jsonContent(RateLimitSchema, 'Google Sheets API rate limit exceeded. Back off and retry, using retryAfter seconds if present.'),
+  429: jsonContent(RateLimitSchema, 'Google Sheets API rate limit exceeded. Back off and retry using the Retry-After header (seconds).'),
+  502: jsonContent(ErrorSchema, 'Upstream (Google Sheets/Drive) request failed. Safe to retry with backoff.'),
   ...AUTH_ERRORS,
 } as const;
 
@@ -94,8 +81,10 @@ dataRouter.openapi(
   }),
   async (c) => {
     const { table_name } = c.req.valid('param');
-    const columns = await GoogleClient.getHeaders(c.env, c.get('spreadsheet_id'), table_name);
-    return c.json({ columns });
+    return await tryOrError(c, async () => {
+      const columns = await GoogleClient.getHeaders(c.env, c.get('spreadsheet_id'), table_name);
+      return c.json({ columns });
+    }) as Response;
   }
 );
 
@@ -129,8 +118,15 @@ dataRouter.openapi(
     for (const name of current.filter((h) => !columns.includes(h))) {
       await GoogleClient.deleteColumn(c.env, spreadsheetId, table_name, name);
     }
-    await GoogleClient.setHeaders(c.env, spreadsheetId, table_name, columns);
-    return c.json({ columns });
+    // Keep retained columns in their existing physical order and append only genuinely
+    // new ones at the end. setHeaders only overwrites the header row's text — it never
+    // moves the underlying cells — so writing the client's requested order verbatim would
+    // silently relabel columns (and their data) whenever the request reorders them.
+    const retained = current.filter((h) => columns.includes(h));
+    const added = columns.filter((h) => !current.includes(h));
+    const finalColumns = [...retained, ...added];
+    await GoogleClient.setHeaders(c.env, spreadsheetId, table_name, finalColumns);
+    return c.json({ columns: finalColumns });
   }
 );
 
@@ -230,13 +226,10 @@ dataRouter.openapi(
     responses: { 200: jsonContent(TableListSchema, 'Table names'), ...COMMON_ERRORS },
   }),
   async (c) => {
-    try {
+    return await tryOrError(c, async () => {
       const tables = await GoogleClient.listTabs(c.env, c.get('spreadsheet_id'));
       return c.json({ tables });
-    } catch (err) {
-      console.error('listTabs error:', err instanceof Error ? err.message : 'Failed to list tables', { cause: err });
-      return c.json({ error: err instanceof Error ? err.message : 'Failed to list tables' }, 500);
-    }
+    }) as Response;
   }
 );
 
@@ -263,17 +256,14 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
-    try {
-      const { table } = c.req.valid('json');
-      const spreadsheetId = c.get('spreadsheet_id');
+    const { table } = c.req.valid('json');
+    const spreadsheetId = c.get('spreadsheet_id');
+    return await tryOrError(c, async () => {
       const existing = await GoogleClient.listTabs(c.env, spreadsheetId);
       if (existing.includes(table)) return c.json({ error: 'Table already exists' }, 400);
       await GoogleClient.createTab(c.env, spreadsheetId, table);
       return c.json({ table }, 201);
-    } catch (err) {
-      console.error('createTab error:', err instanceof Error ? err.message : 'Failed to create table', { cause: err });
-      return c.json({ error: err instanceof Error ? err.message : 'Failed to create table' }, 500);
-    }
+    }) as Response;
   }
 );
 
@@ -292,18 +282,15 @@ dataRouter.openapi(
     },
   }),
   async (c) => {
-    try {
-      const { table } = c.req.valid('param');
-      const spreadsheetId = c.get('spreadsheet_id');
+    const { table } = c.req.valid('param');
+    const spreadsheetId = c.get('spreadsheet_id');
+    return await tryOrError(c, async () => {
       const existing = await GoogleClient.listTabs(c.env, spreadsheetId);
       if (!existing.includes(table)) return c.json({ error: 'Table not found' }, 404);
       if (existing.length <= 1) return c.json({ error: 'Cannot delete the last remaining table' }, 400);
       await GoogleClient.deleteTab(c.env, spreadsheetId, table);
       return c.json({ success: true });
-    } catch (err) {
-      console.error('deleteTab error:', err instanceof Error ? err.message : 'Failed to delete table', { cause: err });
-      return c.json({ error: err instanceof Error ? err.message : 'Failed to delete table' }, 500);
-    }
+    }) as Response;
   }
 );
 
@@ -314,7 +301,9 @@ function validateSql(sql: string): string | null {
   const lower = sql.toLowerCase().trim();
   const blocked = ['drop', 'delete', 'insert', 'update', 'create', 'alter', 'grant', 'revoke', 'exec', 'execute'];
   for (const word of blocked) {
-    if (lower.includes(word)) return `${word.toUpperCase()} is not allowed in GViz SQL`;
+    // Word-boundary match — plain .includes() false-positives on column names like
+    // "created_at"/"updated_at" (which legitimately contain "create"/"update" as a substring).
+    if (new RegExp(`\\b${word}\\b`, 'i').test(lower)) return `${word.toUpperCase()} is not allowed in GViz SQL`;
   }
   if (lower !== '' && !lower.startsWith('select')) {
     return 'Only SELECT queries are allowed (or omit sql for all rows)';
@@ -366,13 +355,10 @@ dataRouter.openapi(
       }) as Response;
     }
 
-    try {
+    return await tryOrError(c, async () => {
       const rows = await GoogleClient.getRows(c.env, spreadsheetId, table_name);
       return c.json(rows);
-    } catch (err) {
-      console.error('getRows error:', { table: table_name, message: err instanceof Error ? err.message : 'Failed to read rows', cause: err });
-      return c.json({ error: err instanceof Error ? err.message : 'Failed to read rows' }, 500);
-    }
+    }) as Response;
   }
 );
 
@@ -399,14 +385,11 @@ dataRouter.openapi(
   }),
   async (c) => {
     const { table_name } = c.req.valid('param');
-    try {
-      const spreadsheetId = c.get('spreadsheet_id');
+    const spreadsheetId = c.get('spreadsheet_id');
+    return await tryOrError(c, async () => {
       await GoogleClient.appendRow(c.env, spreadsheetId, table_name, c.req.valid('json'));
       return c.json({ success: true }, 201);
-    } catch (err) {
-      console.error('appendRow error:', { table: table_name, message: err instanceof Error ? err.message : 'Failed to append row', cause: err });
-      return c.json({ error: err instanceof Error ? err.message : 'Failed to append row' }, 500);
-    }
+    }) as Response;
   }
 );
 
