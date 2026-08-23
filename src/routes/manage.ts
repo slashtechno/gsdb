@@ -7,6 +7,16 @@ import type { Env } from '../types';
 
 export const manageRouter = new OpenAPIHono<Env>();
 
+// Serializes the check-then-act app creation sequence within a single warm instance —
+// without it, two near-simultaneous POSTs (e.g. a double-click) both read the Master
+// Sheet before either has appended, see app_id as free, and both create a spreadsheet.
+let createAppQueue: Promise<unknown> = Promise.resolve();
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const result = createAppQueue.then(fn, fn);
+  createAppQueue = result.catch(() => {});
+  return result;
+}
+
 const ErrorSchema = z.object({ error: z.string() });
 const RateLimitSchema = z.object({
   error: z.string(),
@@ -66,7 +76,7 @@ manageRouter.openapi(
   async (c) => {
     const { app_id } = c.req.valid('json');
 
-    return await tryOrError(c, async () => {
+    return await tryOrError(c, async () => serialized(async () => {
       const existing = await GoogleClient.getMasterSheetApps(c.env);
       if (existing.some((a) => a.app_id === app_id)) {
         return c.json({ error: 'app_id already exists' }, 409);
@@ -93,7 +103,7 @@ manageRouter.openapi(
 
       invalidateAppsCache();
       return c.json({ app_id, api_key: apiKey, spreadsheet_id }, 201);
-    }) as Response;
+    })) as Response;
   }
 );
 

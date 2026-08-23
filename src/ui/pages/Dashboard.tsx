@@ -262,7 +262,9 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
         }
 
         // ── Create app ─────────────────────────────────────────────
+        var isCreatingApp = false;
         async function submitCreateApp() {
+          if (isCreatingApp) return; // guards against double-click / Enter+click double submit
           var input = document.getElementById('createAppInput');
           var appId = input.value.trim();
           hideError('createApp');
@@ -278,6 +280,7 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
           var secret = localStorage.getItem('gsdb_admin_secret');
           if (!secret) { showModal(); return; }
 
+          isCreatingApp = true;
           try {
             var res = await fetch('/manage/apps', {
               method: 'POST',
@@ -305,6 +308,8 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
             }
           } catch (err) {
             showError('createApp', err.message || 'Network error');
+          } finally {
+            isCreatingApp = false;
           }
         }
 
