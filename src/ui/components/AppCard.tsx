@@ -27,7 +27,7 @@ export const AppCard: FC<AppCardProps> = ({ app_id, spreadsheet_id, created_at }
       </a>
     </p>
     <div style={actionsStyle}>
-      <code style={endpointStyle}>/api/{app_id}/:table</code>
+      <code style={endpointStyle}>/api/v1/{app_id}/:table</code>
       <a href={`/ui/apps/${app_id}`} style={openLinkStyle}>
         Open →
       </a>

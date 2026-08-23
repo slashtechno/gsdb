@@ -94,6 +94,7 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id, baseUrl }) => {
 
       <script dangerouslySetInnerHTML={{ __html: `
         var APP_ID = ${jsEmbed(app_id)};
+        var API_BASE = '/api/v1/' + APP_ID;
         var KEY_STORAGE = 'gsdb_api_key:' + APP_ID;
 
         function getAppKey() { return sessionStorage.getItem(KEY_STORAGE); }
@@ -163,7 +164,7 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id, baseUrl }) => {
 
         var originalFetch = window.fetch;
         window.fetch = function(resource, init) {
-          if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/')) {
+          if (typeof resource === 'string' && resource.startsWith(API_BASE + '/')) {
             var secret = localStorage.getItem('gsdb_admin_secret');
             var key = getAppKey();
             init = init || {};
@@ -182,7 +183,7 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id, baseUrl }) => {
             }
           }
           return originalFetch.call(this, resource, init).then(function(res) {
-            if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/') && (res.status === 401 || res.status === 403)) {
+            if (typeof resource === 'string' && resource.startsWith(API_BASE + '/') && (res.status === 401 || res.status === 403)) {
               var stillHasAdmin = !!localStorage.getItem('gsdb_admin_secret');
               if (!stillHasAdmin) {
                 clearAppKey();
@@ -232,7 +233,7 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id, baseUrl }) => {
 
         async function loadTables() {
           try {
-            var res = await fetch('/api/' + APP_ID + '/tables');
+            var res = await fetch(API_BASE + '/tables');
             if (res.ok) {
               var data = await res.json();
               hideErrorBanner();
@@ -258,7 +259,7 @@ export const AppDetail: FC<AppDetailProps> = ({ app_id, baseUrl }) => {
             return;
           }
           try {
-            var res = await fetch('/api/' + APP_ID + '/tables', {
+            var res = await fetch(API_BASE + '/tables', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ table: name }),

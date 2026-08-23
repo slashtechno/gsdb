@@ -243,7 +243,7 @@ export const Dashboard: FC<DashboardProps> = ({ baseUrl }) => {
             +     '<a href="https://docs.google.com/spreadsheets/d/' + esc(app.spreadsheet_id) + '" target="_blank" rel="noreferrer" style="color:var(--accent);font-family:var(--mono);font-size:12px;">' + esc(app.spreadsheet_id.slice(0, 20)) + '…</a>'
             +   '</p>'
             +   '<div style="margin-top:4px;display:flex;align-items:center;justify-content:space-between;gap:8px;">'
-            +     '<code style="background:var(--bg);color:var(--muted);padding:4px 8px;border-radius:6px;font-size:12px;">/api/' + esc(app.app_id) + '/:table</code>'
+            +     '<code style="background:var(--bg);color:var(--muted);padding:4px 8px;border-radius:6px;font-size:12px;">/api/v1/' + esc(app.app_id) + '/:table</code>'
             +     '<a href="/ui/apps/' + esc(app.app_id) + '" style="color:var(--accent);font-size:13px;font-weight:600;text-decoration:none;padding:4px 8px;border-radius:6px;background:rgba(108,99,255,0.1);transition:background 0.15s;">Open →</a>'
             +   '</div>'
             + '</div>';

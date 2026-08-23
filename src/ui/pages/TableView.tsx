@@ -25,7 +25,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           </a>
           <h1 style={tableTitleStyle}>{table}</h1>
           <p style={taglineStyle}>
-            <code style={endpointStyle}>/api/{app_id}/{table}</code>
+            <code style={endpointStyle}>/api/v1/{app_id}/{table}</code>
           </p>
         </div>
         <div style={headerActionsStyle}>
@@ -98,6 +98,8 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
     <script dangerouslySetInnerHTML={{ __html: `
         var APP_ID = ${jsEmbed(app_id)};
         var TABLE = ${jsEmbed(table)};
+        var API_BASE = '/api/v1/' + APP_ID;
+        var TABLE_BASE = API_BASE + '/' + TABLE;
         var KEY_STORAGE = 'gsdb_api_key:' + APP_ID;
         var ROW_LIMIT = ${ROW_LIMIT};
 
@@ -158,7 +160,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
 
         var originalFetch = window.fetch;
         window.fetch = function(resource, init) {
-          if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/')) {
+          if (typeof resource === 'string' && resource.startsWith(API_BASE + '/')) {
             var secret = localStorage.getItem('gsdb_admin_secret');
             var key = getAppKey();
             init = init || {};
@@ -170,7 +172,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
             }
           }
           return originalFetch.call(this, resource, init).then(function(res) {
-            if (typeof resource === 'string' && resource.startsWith('/api/' + APP_ID + '/') && (res.status === 401 || res.status === 403)) {
+            if (typeof resource === 'string' && resource.startsWith(API_BASE + '/') && (res.status === 401 || res.status === 403)) {
               var stillHasAdmin = !!localStorage.getItem('gsdb_admin_secret');
               if (!stillHasAdmin) {
                 clearAppKey();
@@ -258,7 +260,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
         async function addColumnRequest(name) {
           clearError('schema');
           try {
-            var res = await fetch('/api/' + APP_ID + '/' + TABLE + '/schema/' + encodeURIComponent(name), {
+            var res = await fetch(TABLE_BASE + '/schema/' + encodeURIComponent(name), {
               method: 'POST',
             });
             if (res.ok) {
@@ -287,7 +289,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           var from = renameTarget;
           hideRenameColumn();
           try {
-            var res = await fetch('/api/' + APP_ID + '/' + TABLE + '/schema/' + encodeURIComponent(from), {
+            var res = await fetch(TABLE_BASE + '/schema/' + encodeURIComponent(from), {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: newName }),
@@ -308,7 +310,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
           var name = renameTarget;
           hideRemoveColumn();
           try {
-            var res = await fetch('/api/' + APP_ID + '/' + TABLE + '/schema/' + encodeURIComponent(name), {
+            var res = await fetch(TABLE_BASE + '/schema/' + encodeURIComponent(name), {
               method: 'DELETE',
             });
             if (res.ok) {
@@ -391,7 +393,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
         // ── Loaders ─────────────────────────────────────────────────
         async function loadSchema() {
           try {
-            var res = await fetch('/api/' + APP_ID + '/' + TABLE + '/schema');
+            var res = await fetch(TABLE_BASE + '/schema');
             if (res.ok) {
               var data = await res.json();
               columns = data.columns || [];
@@ -409,7 +411,7 @@ export const TableView: FC<TableViewProps> = ({ app_id, table }) => (
 
         async function loadRows() {
           try {
-            var res = await fetch('/api/' + APP_ID + '/' + TABLE);
+            var res = await fetch(TABLE_BASE);
             if (res.ok) {
               var data = await res.json();
               hideErrorBanner('rowsError');
